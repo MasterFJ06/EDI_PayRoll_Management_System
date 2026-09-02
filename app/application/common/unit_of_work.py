@@ -6,6 +6,8 @@ from typing import Self
 class UnitOfWork(ABC):
     """Application-level transaction boundary abstraction."""
 
+    users: object
+
     @abstractmethod
     def __enter__(self) -> Self:
         raise NotImplementedError

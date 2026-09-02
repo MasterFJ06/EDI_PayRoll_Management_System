@@ -5,6 +5,9 @@ from sqlalchemy.orm import Session
 
 from app.application.common.unit_of_work import UnitOfWork
 from app.infrastructure.database.session import SessionLocal
+from app.infrastructure.persistence.repositories.user_repository import (
+    UserRepository,
+)
 
 
 class SQLAlchemyUnitOfWork(UnitOfWork):
@@ -12,9 +15,13 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
 
     def __init__(self) -> None:
         self.session: Session | None = None
+        self.users: UserRepository | None = None
 
     def __enter__(self) -> Self:
         self.session = SessionLocal()
+
+        self.users = UserRepository(self.session)
+
         return self
 
     def __exit__(
@@ -30,6 +37,7 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
             if self.session is not None:
                 self.session.close()
                 self.session = None
+                self.users = None
 
     def commit(self) -> None:
         if self.session is None:
