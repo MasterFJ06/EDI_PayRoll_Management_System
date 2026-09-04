@@ -5,7 +5,11 @@ import pytest
 from app.application.identity.schemas import UserRegistrationRequest
 from app.application.identity.user_service import UserService
 from app.domain.shared.exceptions import BusinessRuleViolation
-
+from app.application.identity.schemas import (
+    UserLoginRequest,
+    UserRegistrationRequest,
+)
+from app.infrastructure.security.password import hash_password
 
 def create_request() -> UserRegistrationRequest:
     return UserRegistrationRequest(
@@ -71,3 +75,61 @@ def test_register_rejects_duplicate_email() -> None:
 
     uow.users.add.assert_not_called()
     uow.commit.assert_not_called()
+
+def test_authenticate_valid_credentials() -> None:
+    uow = Mock()
+
+    user = Mock()
+    user.username = "john"
+    user.password_hash = hash_password("SecurePassword123!")
+    user.status = "ACTIVE"
+
+    uow.users.get_by_username.return_value = user
+
+    service = UserService(uow)
+
+    request = UserLoginRequest(
+        username="john",
+        password="SecurePassword123!",
+    )
+
+    result = service.authenticate(request)
+
+    assert result is user
+    uow.users.get_by_username.assert_called_once_with("john")
+
+
+def test_authenticate_rejects_wrong_password() -> None:
+    uow = Mock()
+
+    user = Mock()
+    user.username = "john"
+    user.password_hash = hash_password("SecurePassword123!")
+    user.status = "ACTIVE"
+
+    uow.users.get_by_username.return_value = user
+
+    service = UserService(uow)
+
+    request = UserLoginRequest(
+        username="john",
+        password="WrongPassword123!",
+    )
+
+    with pytest.raises(BusinessRuleViolation, match="Invalid username or password."):
+        service.authenticate(request)
+
+
+def test_authenticate_rejects_unknown_username() -> None:
+    uow = Mock()
+    uow.users.get_by_username.return_value = None
+
+    service = UserService(uow)
+
+    request = UserLoginRequest(
+        username="unknown",
+        password="SecurePassword123!",
+    )
+
+    with pytest.raises(BusinessRuleViolation, match="Invalid username or password."):
+        service.authenticate(request)

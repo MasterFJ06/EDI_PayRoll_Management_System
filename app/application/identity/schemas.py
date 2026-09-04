@@ -12,3 +12,12 @@ class UserRegistrationResponse(BaseModel):
     username: str
     email: EmailStr
     status: str
+
+class UserLoginRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=50)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class UserLoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"

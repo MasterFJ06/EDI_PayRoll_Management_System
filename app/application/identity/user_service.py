@@ -1,11 +1,15 @@
 from app.application.common.unit_of_work import UnitOfWork
 from app.application.identity.schemas import (
+    UserLoginRequest,
     UserRegistrationRequest,
     UserRegistrationResponse,
 )
 from app.domain.shared.exceptions import BusinessRuleViolation
 from app.infrastructure.persistence.models.user import User
-from app.infrastructure.security.password import hash_password
+from app.infrastructure.security.password import (
+    hash_password,
+    verify_password,
+)
 
 
 class UserService:
@@ -57,3 +61,36 @@ class UserService:
             email=user.email,
             status=user.status,
         )
+
+    def authenticate(
+        self,
+        request: UserLoginRequest,
+    ) -> User:
+        """Authenticate a user using username and password."""
+
+        if self.uow.users is None:
+            raise RuntimeError("Unit of Work has not been started.")
+
+        user = self.uow.users.get_by_username(
+            request.username
+        )
+
+        if user is None:
+            raise BusinessRuleViolation(
+                "Invalid username or password."
+            )
+
+        if not verify_password(
+            request.password,
+            user.password_hash,
+        ):
+            raise BusinessRuleViolation(
+                "Invalid username or password."
+            )
+
+        if user.status != "ACTIVE":
+            raise BusinessRuleViolation(
+                "User account is not active."
+            )
+
+        return user
