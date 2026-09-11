@@ -27,6 +27,7 @@ async def business_rule_violation_handler(
     return JSONResponse(
         status_code=409,
         content={
+            "detail": str(exc),
             "error": {
                 "code": "BUSINESS_RULE_VIOLATION",
                 "message": str(exc),
@@ -42,6 +43,7 @@ async def invalid_domain_state_handler(
     return JSONResponse(
         status_code=409,
         content={
+            "detail": str(exc),
             "error": {
                 "code": "INVALID_DOMAIN_STATE",
                 "message": str(exc),
@@ -62,6 +64,7 @@ async def domain_error_handler(
     return JSONResponse(
         status_code=400,
         content={
+            "detail": str(exc),
             "error": {
                 "code": "DOMAIN_ERROR",
                 "message": str(exc),

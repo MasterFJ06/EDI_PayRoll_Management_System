@@ -7,6 +7,10 @@ class UnitOfWork(ABC):
     """Application-level transaction boundary abstraction."""
 
     users: object
+    refresh_tokens: object
+    departments: object
+    designations: object
+    employees: object
 
     @abstractmethod
     def __enter__(self) -> Self:
