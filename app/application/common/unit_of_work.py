@@ -11,6 +11,7 @@ class UnitOfWork(ABC):
     departments: object
     designations: object
     employees: object
+    attendance: object
 
     @abstractmethod
     def __enter__(self) -> Self:

@@ -20,7 +20,9 @@ from app.infrastructure.persistence.repositories.designation_repository import (
 from app.infrastructure.persistence.repositories.employee_repository import (
     EmployeeRepository,
 )
-
+from app.infrastructure.persistence.repositories.attendance_repository import (
+    AttendanceRepository,
+)
 class SQLAlchemyUnitOfWork(UnitOfWork):
     """SQLAlchemy implementation of the Unit of Work pattern."""
 
@@ -39,6 +41,7 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
         self.departments = SQLAlchemyDepartmentRepository(self.session)
         self.designations = SQLAlchemyDesignationRepository(self.session)
         self.employees = EmployeeRepository(self.session)
+        self.attendance = AttendanceRepository(self.session)
         return self
 
     def __exit__(
@@ -59,6 +62,7 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
                 self.departments = None
                 self.designations = None
                 self.employees = None
+                self.attendance = None
 
     def commit(self) -> None:
         if self.session is None:
