@@ -304,12 +304,6 @@ CREATE TABLE employees (
             )
         ),
 
-    CONSTRAINT chk_employees_not_self_manager
-        CHECK (
-            manager_employee_id IS NULL
-            OR manager_employee_id <> employee_id
-        ),
-
     CONSTRAINT fk_employees_user
         FOREIGN KEY (user_id)
         REFERENCES users(user_id)
