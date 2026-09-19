@@ -1,0 +1,25 @@
+EPMS FRONTEND - UPDATED
+
+1. Install dependencies
+   npm install
+
+2. Configure .env
+   VITE_API_BASE_URL=http://localhost:8000/api
+   VITE_USE_MOCKS=false
+   VITE_AUTH_LOGIN_MODE=json
+
+3. Start the FastAPI backend first, then:
+   npm run dev
+
+Demo-only mode:
+   VITE_USE_MOCKS=true
+
+Auth notes:
+- Login uses POST /auth/login.
+- Existing sessions are verified with GET /auth/me.
+- JWT is sent as Authorization: Bearer <token>.
+- Public registration creates Employee accounts only.
+- If your FastAPI login uses OAuth2PasswordRequestForm, set:
+  VITE_AUTH_LOGIN_MODE=form
+
+The UI RBAC is not a security boundary. The FastAPI backend must enforce permissions.
