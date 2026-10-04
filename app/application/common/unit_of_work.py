@@ -12,6 +12,9 @@ class UnitOfWork(ABC):
     designations: object
     employees: object
     attendance: object
+    leave_types: object
+    leave_balances: object
+    leave_requests: object
 
     @abstractmethod
     def __enter__(self) -> Self:

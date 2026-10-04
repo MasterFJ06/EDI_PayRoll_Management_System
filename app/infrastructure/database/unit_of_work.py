@@ -23,6 +23,17 @@ from app.infrastructure.persistence.repositories.employee_repository import (
 from app.infrastructure.persistence.repositories.attendance_repository import (
     AttendanceRepository,
 )
+from app.infrastructure.persistence.repositories.leave_type_repository import (
+    LeaveTypeRepository,
+)
+from app.infrastructure.persistence.repositories.leave_balance_repository import (
+    LeaveBalanceRepository,
+)
+from app.infrastructure.persistence.repositories.leave_request_repository import (
+    LeaveRequestRepository,
+)
+
+
 class SQLAlchemyUnitOfWork(UnitOfWork):
     """SQLAlchemy implementation of the Unit of Work pattern."""
 
@@ -33,6 +44,9 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
         self.departments: SQLAlchemyDepartmentRepository | None = None
         self.designations: SQLAlchemyDesignationRepository | None = None
         self.employees: EmployeeRepository | None = None
+        self.leave_types: LeaveTypeRepository | None = None
+        self.leave_balances: LeaveBalanceRepository | None = None
+        self.leave_requests: LeaveRequestRepository | None = None
 
     def __enter__(self) -> Self:
         self.session = SessionLocal()
@@ -42,6 +56,9 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
         self.designations = SQLAlchemyDesignationRepository(self.session)
         self.employees = EmployeeRepository(self.session)
         self.attendance = AttendanceRepository(self.session)
+        self.leave_types = LeaveTypeRepository(self.session)
+        self.leave_balances = LeaveBalanceRepository(self.session)
+        self.leave_requests = LeaveRequestRepository(self.session)
         return self
 
     def __exit__(
@@ -63,6 +80,9 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
                 self.designations = None
                 self.employees = None
                 self.attendance = None
+                self.leave_types = None
+                self.leave_balances = None
+                self.leave_requests = None
 
     def commit(self) -> None:
         if self.session is None:
