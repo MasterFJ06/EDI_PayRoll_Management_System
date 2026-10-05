@@ -26,6 +26,7 @@ class Employee(Base):
     )
 
     user_id: Mapped[int | None] = mapped_column(
+        _UNSIGNED_BIGINT,
         ForeignKey("users.user_id"),
         nullable=True,
         unique=True,

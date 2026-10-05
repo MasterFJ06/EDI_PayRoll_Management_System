@@ -1,9 +1,13 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, UniqueConstraint, text
+from sqlalchemy import DateTime, Integer, String, UniqueConstraint, text
+from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.persistence.models.base import Base
+
+
+_UNSIGNED_BIGINT = Integer().with_variant(mysql.BIGINT(unsigned=True), "mysql")
 
 
 class User(Base):
@@ -23,6 +27,7 @@ class User(Base):
     )
 
     user_id: Mapped[int] = mapped_column(
+        _UNSIGNED_BIGINT,
         primary_key=True,
         autoincrement=True,
     )
