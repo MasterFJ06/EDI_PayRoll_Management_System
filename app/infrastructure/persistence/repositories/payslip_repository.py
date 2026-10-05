@@ -1,0 +1,30 @@
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.domain.payroll.repository import PayslipRepository as PayslipRepositoryContract
+from app.infrastructure.persistence.models.payslip import PayslipModel
+
+
+class PayslipRepository(PayslipRepositoryContract):
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def get_by_id(self, payslip_id: int) -> PayslipModel | None:
+        return self.session.scalar(
+            select(PayslipModel).where(PayslipModel.payslip_id == payslip_id)
+        )
+
+    def get_by_result_id(self, payroll_result_id: int) -> PayslipModel | None:
+        return self.session.scalar(
+            select(PayslipModel).where(PayslipModel.payroll_result_id == payroll_result_id)
+        )
+
+    def get_by_number(self, payslip_number: str) -> PayslipModel | None:
+        return self.session.scalar(
+            select(PayslipModel).where(PayslipModel.payslip_number == payslip_number)
+        )
+
+    def add(self, payslip: PayslipModel) -> PayslipModel:
+        self.session.add(payslip)
+        self.session.flush()
+        return payslip

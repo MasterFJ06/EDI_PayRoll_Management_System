@@ -20,6 +20,11 @@ class UnitOfWork(ABC):
     salary_revisions: object
     salary_revision_components: object
     employee_salary_assignments: object
+    payroll_runs: object
+    payroll_results: object
+    payroll_result_components: object
+    payroll_processing_issues: object
+    payslips: object
 
     @abstractmethod
     def __enter__(self) -> Self:

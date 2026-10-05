@@ -212,6 +212,35 @@ Payroll processing, calculation semantics, and undefined effective-date overlap 
 
 ---
 
+## Payroll Management — Phase 1 (Core Backend Layers)
+
+Status: CORE BACKEND LAYERS IMPLEMENTED (API NOT IMPLEMENTED)
+
+Implemented for the five authoritative Payroll tables:
+
+- PayrollRun, PayrollResult, PayrollResultComponent, PayrollProcessingIssue, and Payslip domain entities
+- SQLAlchemy models for all five tables, with schema-aligned columns, unsigned types, constraints, indexes, defaults, timestamps, foreign-key actions, and InnoDB engine settings
+- five Payroll repository contracts and SQLAlchemy repositories using the shared Unit of Work session
+- create request/response schemas and application services for payroll runs, supplied payroll results, result components, processing issues, and payslips
+- Unit of Work integration, including shared-session commit and rollback behavior
+- schema-backed domain validation for allowed status/type values, payroll month/ranges, nonnegative earnings/deductions/components, net salary consistency, calculation order range, and processing-issue resolution consistency
+- focused domain, application, ORM mapping, repository, and Unit of Work tests
+
+No payroll earnings or deduction formulas were implemented. A supplied net salary is checked against the schema equation but is not derived. Schema-supported status values are accepted; no status transitions are implemented. No concurrent processing engine was implemented. Cross-record QA rules are undefined; current validation enforces only schema-backed invariants, with broader QA behavior deferred. Attendance and Leave were not integrated because the Payroll schema defines no direct foreign-key relationships to them.
+
+`database/schema.sql` was not modified, no migration was created, no Payroll API or API tests were added, and the frontend was not changed. Existing Compensation implementation was left unchanged.
+
+Verification:
+
+- 31 Payroll-focused tests passed
+- 238 existing Identity/security, Employee, Attendance, Leave, and Compensation tests passed
+- 314 full-suite tests passed
+- SQLAlchemy MySQL DDL was inspected against all five authoritative table definitions
+- `git diff --check` passed
+- One existing Starlette/httpx test-client deprecation warning remains
+
+---
+
 # Current Test Baseline
 
 At the Attendance milestone:
@@ -268,4 +297,4 @@ Remote repository:
 
 # Next Phase
 
-Compensation / Salary Management Phase 2 is complete. Payroll processing remains a later, unstarted phase.
+Compensation / Salary Management Phase 2 is complete. Payroll Phase 1 core backend layers are implemented; API integration and processing behaviors that require further authoritative contracts remain for later phases.

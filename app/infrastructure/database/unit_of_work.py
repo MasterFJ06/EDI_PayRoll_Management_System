@@ -47,6 +47,19 @@ from app.infrastructure.persistence.repositories.salary_revision_component_repos
 from app.infrastructure.persistence.repositories.employee_salary_assignment_repository import (
     EmployeeSalaryAssignmentRepository,
 )
+from app.infrastructure.persistence.repositories.payroll_run_repository import (
+    PayrollRunRepository,
+)
+from app.infrastructure.persistence.repositories.payroll_result_repository import (
+    PayrollResultRepository,
+)
+from app.infrastructure.persistence.repositories.payroll_result_component_repository import (
+    PayrollResultComponentRepository,
+)
+from app.infrastructure.persistence.repositories.payroll_processing_issue_repository import (
+    PayrollProcessingIssueRepository,
+)
+from app.infrastructure.persistence.repositories.payslip_repository import PayslipRepository
 
 
 class SQLAlchemyUnitOfWork(UnitOfWork):
@@ -67,6 +80,11 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
         self.salary_revisions: SalaryRevisionRepository | None = None
         self.salary_revision_components: SalaryRevisionComponentRepository | None = None
         self.employee_salary_assignments: EmployeeSalaryAssignmentRepository | None = None
+        self.payroll_runs: PayrollRunRepository | None = None
+        self.payroll_results: PayrollResultRepository | None = None
+        self.payroll_result_components: PayrollResultComponentRepository | None = None
+        self.payroll_processing_issues: PayrollProcessingIssueRepository | None = None
+        self.payslips: PayslipRepository | None = None
 
     def __enter__(self) -> Self:
         self.session = SessionLocal()
@@ -84,6 +102,11 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
         self.salary_revisions = SalaryRevisionRepository(self.session)
         self.salary_revision_components = SalaryRevisionComponentRepository(self.session)
         self.employee_salary_assignments = EmployeeSalaryAssignmentRepository(self.session)
+        self.payroll_runs = PayrollRunRepository(self.session)
+        self.payroll_results = PayrollResultRepository(self.session)
+        self.payroll_result_components = PayrollResultComponentRepository(self.session)
+        self.payroll_processing_issues = PayrollProcessingIssueRepository(self.session)
+        self.payslips = PayslipRepository(self.session)
         return self
 
     def __exit__(
@@ -113,6 +136,11 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
                 self.salary_revisions = None
                 self.salary_revision_components = None
                 self.employee_salary_assignments = None
+                self.payroll_runs = None
+                self.payroll_results = None
+                self.payroll_result_components = None
+                self.payroll_processing_issues = None
+                self.payslips = None
 
     def commit(self) -> None:
         if self.session is None:
