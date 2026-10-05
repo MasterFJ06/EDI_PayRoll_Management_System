@@ -193,6 +193,98 @@ Pydantic request validation failures return HTTP 422. Schema-backed domain rule 
 
 ---
 
+# Compensation / Salary Management
+
+All Compensation endpoints require an active user authenticated with a Bearer access token. Successful creation returns HTTP 201. Pydantic request validation failures return HTTP 422. Missing referenced records, duplicate values protected by application/database uniqueness, and schema-backed domain rule failures return HTTP 409 through the centralized error handler.
+
+## POST /api/v1/salary-structures
+
+Creates a salary structure.
+
+Request fields:
+
+- `structure_code` (string, 1–30 characters)
+- `structure_name` (string, 1–100 characters)
+- `description` (optional string, up to 500 characters)
+- `status` (`ACTIVE` or `INACTIVE`; defaults to `ACTIVE`)
+
+Successful response: HTTP 201 with `salary_structure_id`, `structure_code`, `structure_name`, `description`, and `status`.
+
+The structure code is unique. Duplicate codes return HTTP 409.
+
+## POST /api/v1/salary-components
+
+Creates a salary component.
+
+Request fields:
+
+- `component_code` (string, 1–30 characters)
+- `component_name` (string, 1–100 characters)
+- `component_type` (`EARNING` or `DEDUCTION`)
+- `status` (`ACTIVE` or `INACTIVE`; defaults to `ACTIVE`)
+
+Successful response: HTTP 201 with `salary_component_id`, `component_code`, `component_name`, `component_type`, and `status`.
+
+The component code is unique. Duplicate codes return HTTP 409.
+
+## POST /api/v1/salary-revisions
+
+Creates a revision for an existing salary structure.
+
+Request fields:
+
+- `salary_structure_id` (positive integer referencing an existing structure)
+- `revision_number` (integer, 0–4,294,967,295)
+- `effective_from` (date)
+- `effective_to` (optional date; must not precede `effective_from`)
+
+Successful response: HTTP 201 with `salary_revision_id`, `salary_structure_id`, `revision_number`, `effective_from`, and `effective_to`.
+
+The pair `(salary_structure_id, revision_number)` is unique. A missing structure or duplicate pair returns HTTP 409.
+
+## POST /api/v1/salary-revision-components
+
+Adds a component to an existing salary revision.
+
+Request fields:
+
+- `salary_revision_id` (positive integer referencing an existing revision)
+- `salary_component_id` (positive integer referencing an existing component)
+- `calculation_type` (`FIXED` or `PERCENTAGE`)
+- `fixed_amount` (optional nonnegative decimal, up to 15 digits and 2 decimal places)
+- `percentage_value` (optional nonnegative decimal, up to 8 digits and 4 decimal places)
+- `base_component_id` (optional positive integer referencing an existing component)
+
+For `FIXED`, `fixed_amount` is required and `percentage_value` and `base_component_id` must be null. For `PERCENTAGE`, `percentage_value` and `base_component_id` are required and `fixed_amount` must be null. These combinations follow the database check constraint; this endpoint does not calculate salary values.
+
+Successful response: HTTP 201 with `salary_revision_id`, `salary_component_id`, `calculation_type`, `fixed_amount`, `percentage_value`, and `base_component_id`.
+
+The revision/component pair is unique. Missing references, an invalid calculation-field combination, or a duplicate pair returns HTTP 409.
+
+## POST /api/v1/employee-salary-assignments
+
+Assigns an existing salary revision to an existing employee.
+
+Request fields:
+
+- `employee_id` (positive integer referencing an existing employee)
+- `salary_revision_id` (positive integer referencing an existing revision)
+- `effective_from` (date)
+- `effective_to` (optional date; must not precede `effective_from`)
+
+Successful response: HTTP 201 with `salary_assignment_id`, `employee_id`, `salary_revision_id`, `effective_from`, and `effective_to`.
+
+Missing employee or revision references and reversed dates return HTTP 409. The schema defines no assignment uniqueness or overlap rule.
+
+## Compensation Error Responses
+
+- HTTP 401: unauthenticated or invalid/expired access token; the existing authentication response format applies.
+- HTTP 422: invalid request body or field values; the FastAPI/Pydantic validation response applies.
+- HTTP 409: centralized business-rule response with `detail` and an `error` object containing `code`, `message`, and `request_id`.
+- HTTP 500: centralized unexpected-error response with an `error` object containing `code`, a generic `message`, and `request_id`.
+
+---
+
 # Authentication
 
 Protected endpoints use the current authenticated-user dependency.

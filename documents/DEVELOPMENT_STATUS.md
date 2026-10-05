@@ -189,6 +189,29 @@ Verification:
 
 ---
 
+## Compensation / Salary Management — Phase 2 (API)
+
+Status: COMPLETE
+
+Implemented authenticated create endpoints for salary structures, salary components, salary revisions, salary revision components, and employee salary assignments. The endpoints reuse the Phase 1 request/response schemas, application services, and existing Unit of Work dependency. No list, update, or delete endpoints were added.
+
+Verification:
+
+- 34 Compensation API tests passed
+- 94 total Compensation tests passed
+- 283 full-suite tests passed
+- `/docs` and `/openapi.json` returned HTTP 200; all five authenticated POST operations and their schemas appear in generated OpenAPI
+- Live registration/login succeeded for synthetic development user ID 4 (`codex_comp2_a243fc7025ba`)
+- Authenticated salary structure creation succeeded with HTTP 201 (synthetic salary structure ID 1)
+- Repeating the structure code returned HTTP 409 (`BUSINESS_RULE_VIOLATION`)
+- An unauthenticated create returned HTTP 401
+- No existing development records were modified or deleted
+- One existing Starlette/httpx test-client deprecation warning remains
+
+Payroll processing, calculation semantics, and undefined effective-date overlap rules remain deferred.
+
+---
+
 # Current Test Baseline
 
 At the Attendance milestone:
@@ -245,4 +268,4 @@ Remote repository:
 
 # Next Phase
 
-Compensation / Salary Management Phase 2 (API) has not started. Payroll processing remains a later phase.
+Compensation / Salary Management Phase 2 is complete. Payroll processing remains a later, unstarted phase.
