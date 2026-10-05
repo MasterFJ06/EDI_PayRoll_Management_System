@@ -1,9 +1,13 @@
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, String, text
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, String, text
+from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.persistence.models.base import Base
+
+
+_UNSIGNED_BIGINT = Integer().with_variant(mysql.BIGINT(unsigned=True), "mysql")
 
 
 class AttendanceRecord(Base):
@@ -15,6 +19,7 @@ class AttendanceRecord(Base):
     )
 
     employee_id: Mapped[int] = mapped_column(
+        _UNSIGNED_BIGINT,
         ForeignKey(
             "employees.employee_id",
             ondelete="RESTRICT",

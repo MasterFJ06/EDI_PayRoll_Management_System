@@ -158,6 +158,37 @@ The live smoke test added only the synthetic account and one synthetic Leave Typ
 
 ---
 
+## Compensation / Salary Management — Phase 1 (Core Backend Layers)
+
+Status: COMPLETE (API NOT IMPLEMENTED)
+
+Implemented for the five authoritative Compensation tables:
+
+- SalaryStructure, SalaryComponent, SalaryRevision, SalaryRevisionComponent, and EmployeeSalaryAssignment domain entities
+- schema-aligned SQLAlchemy models, constraints, indexes, defaults, timestamps, and foreign-key behavior
+- five Compensation repository contracts and SQLAlchemy repositories
+- request/response schemas and create services for structures, components, revisions, revision components, and employee salary assignments
+- Unit of Work integration using the existing shared SQLAlchemy session
+- domain, application, repository, and Unit of Work tests
+
+Deferred because no authoritative rule defines the behavior:
+
+- salary calculation and interpretation of configured components
+- revision or assignment overlap rules
+- effective-date rules beyond the schema's end-date checks
+- percentage ceilings or payroll calculation behavior
+
+Payroll processing, Compensation API endpoints, and frontend integration are not part of this phase. `database/schema.sql` was not modified and no migration was created.
+
+Verification:
+
+- 60 Compensation-focused tests passed
+- 44 affected existing Employee, Attendance, Leave, and Unit of Work tests passed
+- 249 full-suite tests passed
+- One existing Starlette/httpx test-client deprecation warning remains
+
+---
+
 # Current Test Baseline
 
 At the Attendance milestone:
@@ -212,6 +243,6 @@ Remote repository:
 
 ---
 
-# Next Module
+# Next Phase
 
-Leave Management Phase 2 is complete. No subsequent module has been started.
+Compensation / Salary Management Phase 2 (API) has not started. Payroll processing remains a later phase.

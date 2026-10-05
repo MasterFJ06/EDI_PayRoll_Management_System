@@ -15,6 +15,11 @@ class UnitOfWork(ABC):
     leave_types: object
     leave_balances: object
     leave_requests: object
+    salary_structures: object
+    salary_components: object
+    salary_revisions: object
+    salary_revision_components: object
+    employee_salary_assignments: object
 
     @abstractmethod
     def __enter__(self) -> Self:

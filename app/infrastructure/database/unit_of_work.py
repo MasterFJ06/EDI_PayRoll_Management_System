@@ -32,6 +32,21 @@ from app.infrastructure.persistence.repositories.leave_balance_repository import
 from app.infrastructure.persistence.repositories.leave_request_repository import (
     LeaveRequestRepository,
 )
+from app.infrastructure.persistence.repositories.salary_structure_repository import (
+    SalaryStructureRepository,
+)
+from app.infrastructure.persistence.repositories.salary_component_repository import (
+    SalaryComponentRepository,
+)
+from app.infrastructure.persistence.repositories.salary_revision_repository import (
+    SalaryRevisionRepository,
+)
+from app.infrastructure.persistence.repositories.salary_revision_component_repository import (
+    SalaryRevisionComponentRepository,
+)
+from app.infrastructure.persistence.repositories.employee_salary_assignment_repository import (
+    EmployeeSalaryAssignmentRepository,
+)
 
 
 class SQLAlchemyUnitOfWork(UnitOfWork):
@@ -47,6 +62,11 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
         self.leave_types: LeaveTypeRepository | None = None
         self.leave_balances: LeaveBalanceRepository | None = None
         self.leave_requests: LeaveRequestRepository | None = None
+        self.salary_structures: SalaryStructureRepository | None = None
+        self.salary_components: SalaryComponentRepository | None = None
+        self.salary_revisions: SalaryRevisionRepository | None = None
+        self.salary_revision_components: SalaryRevisionComponentRepository | None = None
+        self.employee_salary_assignments: EmployeeSalaryAssignmentRepository | None = None
 
     def __enter__(self) -> Self:
         self.session = SessionLocal()
@@ -59,6 +79,11 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
         self.leave_types = LeaveTypeRepository(self.session)
         self.leave_balances = LeaveBalanceRepository(self.session)
         self.leave_requests = LeaveRequestRepository(self.session)
+        self.salary_structures = SalaryStructureRepository(self.session)
+        self.salary_components = SalaryComponentRepository(self.session)
+        self.salary_revisions = SalaryRevisionRepository(self.session)
+        self.salary_revision_components = SalaryRevisionComponentRepository(self.session)
+        self.employee_salary_assignments = EmployeeSalaryAssignmentRepository(self.session)
         return self
 
     def __exit__(
@@ -83,6 +108,11 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
                 self.leave_types = None
                 self.leave_balances = None
                 self.leave_requests = None
+                self.salary_structures = None
+                self.salary_components = None
+                self.salary_revisions = None
+                self.salary_revision_components = None
+                self.employee_salary_assignments = None
 
     def commit(self) -> None:
         if self.session is None:

@@ -1,15 +1,20 @@
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, String, text
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, String, text
+from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.persistence.models.base import Base
+
+
+_UNSIGNED_BIGINT = Integer().with_variant(mysql.BIGINT(unsigned=True), "mysql")
 
 
 class Employee(Base):
     __tablename__ = "employees"
 
     employee_id: Mapped[int] = mapped_column(
+        _UNSIGNED_BIGINT,
         primary_key=True,
         autoincrement=True,
     )
@@ -47,6 +52,7 @@ class Employee(Base):
     )
 
     manager_employee_id: Mapped[int | None] = mapped_column(
+        _UNSIGNED_BIGINT,
         ForeignKey("employees.employee_id"),
         nullable=True,
     )
