@@ -311,12 +311,34 @@ Retrieves a Payroll Run for users with `payroll.run.read`. Successful response: 
 with the same Payroll Run fields returned by the create operation. A missing run returns
 HTTP 404. Employees and other users without the permission receive HTTP 403.
 
-Payroll Phase 2A does not process runs or create results, issues, or payslips.
+Phase 2A created and retrieved Payroll Runs. Processing is implemented separately
+as a run claim only; payroll calculations and result, issue, or payslip creation
+are not part of the process operation.
 
 For these endpoints, unauthenticated requests return HTTP 401, authenticated requests
 without the required permission return HTTP 403, invalid period input returns HTTP 422,
 duplicate periods return HTTP 409, and unexpected failures use the centralized HTTP 500
 response.
+
+## Payroll Management — Phase 2B-1 (Run Claim)
+
+### POST /api/v1/payroll/runs/{run_id}/process
+
+Requires `payroll.run.process` and an active authenticated user. This operation
+atomically claims a run only when its current status is `CREATED`, sets `started_at`,
+and returns HTTP 200 with the existing Payroll Run response fields and status
+`PROCESSING`. The operation does not calculate payroll or create results, components,
+processing issues, or payslips. The request has no body; client-supplied state is not
+accepted.
+
+A missing run returns HTTP 404. A run in any status other than `CREATED` returns HTTP
+409. Simultaneous/duplicate requests are serialized by the conditional database update;
+only one can claim the run and subsequent attempts return HTTP 409 without resetting
+`started_at`. Unauthenticated and unauthorized requests return HTTP 401 and HTTP 403.
+Unexpected orchestration failures use the centralized HTTP 500 response and attempt an
+atomic `PROCESSING` to `FAILED` transition. A started or failed lifecycle transition is
+recorded in the existing audit tables and includes the request correlation ID when
+available. Retry, finalization, calculation, and artifact generation are not implemented.
 
 ---
 
@@ -345,8 +367,8 @@ provide the user identity, role, or permission used for the decision.
 The development seed catalog includes the `Payroll Administrator` role and granular
 permissions `payroll.run.create`, `payroll.run.read`, `payroll.run.process`,
 `payroll.run.retry`, and `payroll.run.finalize`. No user is assigned to the role by the
-seed data. The two implemented Payroll Run operations are documented in the Phase 2A
-section above; processing, retry, finalization, and payslip operations remain
+seed data. Implemented Payroll Run operations are documented in the Phase 2A and
+Phase 2B-1 sections above; retry, finalization, and payslip operations remain
 unimplemented.
 
 ---

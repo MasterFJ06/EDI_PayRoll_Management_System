@@ -8,6 +8,7 @@ class UnitOfWork(ABC):
 
     users: object
     authorization: object
+    audit_events: object
     refresh_tokens: object
     departments: object
     designations: object

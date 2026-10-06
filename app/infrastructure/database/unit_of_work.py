@@ -14,6 +14,9 @@ from app.infrastructure.persistence.repositories.user_repository import (
 from app.infrastructure.persistence.repositories.authorization_repository import (
     AuthorizationRepository,
 )
+from app.infrastructure.persistence.repositories.audit_event_repository import (
+    AuditEventRepository,
+)
 from app.infrastructure.persistence.repositories.department_repository import (
     SQLAlchemyDepartmentRepository,
 )
@@ -72,6 +75,7 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
         self.session: Session | None = None
         self.users: UserRepository | None = None
         self.authorization: AuthorizationRepository | None = None
+        self.audit_events: AuditEventRepository | None = None
         self.refresh_tokens: RefreshTokenRepository | None = None
         self.departments: SQLAlchemyDepartmentRepository | None = None
         self.designations: SQLAlchemyDesignationRepository | None = None
@@ -94,6 +98,7 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
         self.session = SessionLocal()
         self.users = UserRepository(self.session)
         self.authorization = AuthorizationRepository(self.session)
+        self.audit_events = AuditEventRepository(self.session)
         self.refresh_tokens = RefreshTokenRepository(self.session)
         self.departments = SQLAlchemyDepartmentRepository(self.session)
         self.designations = SQLAlchemyDesignationRepository(self.session)
@@ -129,6 +134,7 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
                 self.session = None
                 self.users = None
                 self.authorization = None
+                self.audit_events = None
                 self.refresh_tokens = None
                 self.departments = None
                 self.designations = None

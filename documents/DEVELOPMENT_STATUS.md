@@ -271,6 +271,39 @@ Verification:
 
 ---
 
+## Payroll Management — Phase 2B-1 (Run Claim)
+
+Status: IMPLEMENTED (AUTOMATED VALIDATION; LIVE MYSQL SMOKE NOT RUN)
+
+Implemented:
+
+- `POST /api/v1/payroll/runs/{run_id}/process`, authorized by
+  `payroll.run.process`
+- atomic `CREATED` to `PROCESSING` claim using a conditional database update and
+  `started_at` timestamp
+- rejection of duplicate or invalid-state claims with HTTP 409; missing runs return
+  HTTP 404
+- application-level orchestration boundary with no payroll calculation or generated
+  payroll artifacts
+- atomic `PROCESSING` to `FAILED` transition and audit event when an unexpected
+  orchestration failure occurs
+- processing-started and processing-failed events recorded through ORM mappings for
+  the existing `audit_events` and `audit_event_changes` tables, with correlation ID
+  where available
+
+No schema or migration changes were made. Payroll calculation, results/components,
+processing issues, retry, finalization, worker pools, and payslips remain unimplemented.
+
+Verification:
+
+- Focused processing, API, repository concurrency, Audit mapping, Unit of Work, Payroll
+  Phase 1/2A, authorization, and RBAC tests: 50 passed
+- 356 full-suite tests passed
+- Live MySQL smoke test was not performed; the RBAC seed does not assign a user the
+  `Payroll Administrator` role, and no development privilege assignment was made.
+
+---
+
 # Current Test Baseline
 
 At the Attendance milestone:

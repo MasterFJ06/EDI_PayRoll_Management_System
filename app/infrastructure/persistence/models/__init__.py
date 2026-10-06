@@ -29,6 +29,8 @@ from app.infrastructure.persistence.models.permission import Permission
 from app.infrastructure.persistence.models.role import Role
 from app.infrastructure.persistence.models.role_permission import RolePermission
 from app.infrastructure.persistence.models.user_role import UserRole
+from app.infrastructure.persistence.models.audit_event import AuditEventModel
+from app.infrastructure.persistence.models.audit_event_change import AuditEventChangeModel
 
 __all__ = [
     "Department",
@@ -54,4 +56,6 @@ __all__ = [
     "Permission",
     "UserRole",
     "RolePermission",
+    "AuditEventModel",
+    "AuditEventChangeModel",
 ]
