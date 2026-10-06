@@ -285,6 +285,41 @@ Missing employee or revision references and reversed dates return HTTP 409. The 
 
 ---
 
+# Payroll Management — Phase 2A
+
+Payroll Run creation requires the `payroll.run.create` permission. Run retrieval requires
+`payroll.run.read`. Both permissions are evaluated using the authenticated user's current
+RBAC assignments.
+
+## POST /api/v1/payroll/runs
+
+Creates a Payroll Run in `CREATED` status.
+
+Request fields:
+
+- `year` (integer, 1–65,535)
+- `month` (integer, 1–12)
+
+The authenticated user's ID is recorded as `initiated_by_user_id`; client-supplied identity
+fields are ignored. Successful response: HTTP 201 with `payroll_run_id`, `payroll_year`,
+`payroll_month`, `status`, and `initiated_by_user_id`. A duplicate year/month period
+returns HTTP 409, including a collision enforced by the database unique constraint.
+
+## GET /api/v1/payroll/runs/{run_id}
+
+Retrieves a Payroll Run for users with `payroll.run.read`. Successful response: HTTP 200
+with the same Payroll Run fields returned by the create operation. A missing run returns
+HTTP 404. Employees and other users without the permission receive HTTP 403.
+
+Payroll Phase 2A does not process runs or create results, issues, or payslips.
+
+For these endpoints, unauthenticated requests return HTTP 401, authenticated requests
+without the required permission return HTTP 403, invalid period input returns HTTP 422,
+duplicate periods return HTTP 409, and unexpected failures use the centralized HTTP 500
+response.
+
+---
+
 # Authentication
 
 Protected endpoints use the current authenticated-user dependency.
@@ -297,6 +332,22 @@ Client
 → JWT validation
 → user lookup
 → active user
+
+## Backend authorization
+
+Protected operations may declare a permission using the reusable
+`require_permission(permission_code)` API dependency. The permission is evaluated against
+the authenticated user's current `user_roles` and `role_permissions` records and only
+active roles grant access. Missing or invalid authentication returns HTTP 401. An
+authenticated user without the required permission returns HTTP 403. Clients cannot
+provide the user identity, role, or permission used for the decision.
+
+The development seed catalog includes the `Payroll Administrator` role and granular
+permissions `payroll.run.create`, `payroll.run.read`, `payroll.run.process`,
+`payroll.run.retry`, and `payroll.run.finalize`. No user is assigned to the role by the
+seed data. The two implemented Payroll Run operations are documented in the Phase 2A
+section above; processing, retry, finalization, and payslip operations remain
+unimplemented.
 
 ---
 

@@ -7,6 +7,7 @@ class UnitOfWork(ABC):
     """Application-level transaction boundary abstraction."""
 
     users: object
+    authorization: object
     refresh_tokens: object
     departments: object
     designations: object

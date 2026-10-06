@@ -25,6 +25,10 @@ from app.infrastructure.persistence.models.payroll_processing_issue import (
     PayrollProcessingIssueModel,
 )
 from app.infrastructure.persistence.models.payslip import PayslipModel
+from app.infrastructure.persistence.models.permission import Permission
+from app.infrastructure.persistence.models.role import Role
+from app.infrastructure.persistence.models.role_permission import RolePermission
+from app.infrastructure.persistence.models.user_role import UserRole
 
 __all__ = [
     "Department",
@@ -46,4 +50,8 @@ __all__ = [
     "PayrollResultComponentModel",
     "PayrollProcessingIssueModel",
     "PayslipModel",
+    "Role",
+    "Permission",
+    "UserRole",
+    "RolePermission",
 ]

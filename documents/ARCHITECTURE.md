@@ -230,6 +230,17 @@ Security architecture includes:
 - DTO validation
 - parameterized database access
 
+### Role-Based Authorization
+
+The persisted authorization chain is
+`users → user_roles → roles → role_permissions → permissions`.
+Protected APIs use the validated current user from the JWT dependency and the reusable
+`require_permission(permission_code)` dependency. Permission checks read current role and
+permission assignments from the shared Unit of Work session; inactive roles do not grant
+permissions. Missing/invalid authentication returns HTTP 401, and an authenticated user
+without the required permission receives HTTP 403. Role assignment is not exposed as an
+API operation by this authorization prerequisite.
+
 ---
 
 # 10. Concurrency

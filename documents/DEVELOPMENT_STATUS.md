@@ -19,6 +19,7 @@ Implemented:
 - password hashing
 - JWT access token
 - current-user authentication dependency
+- reusable database-backed role/permission authorization dependency
 - user repository
 - refresh-token infrastructure
 - centralized error handling
@@ -28,7 +29,13 @@ Security:
 - Argon2id password hashing
 - JWT access tokens
 - active-user validation
+- persisted user-role and role-permission checks; inactive roles grant no permissions
 - protected API endpoints
+
+The seed catalog defines the `Payroll Administrator` role and the granular payroll
+permissions. It does not assign any user to that role. Payroll authorization currently
+supports `payroll.run.create` and `payroll.run.read`; no Payroll API operations are
+implemented by this prerequisite.
 
 ---
 
@@ -241,6 +248,29 @@ Verification:
 
 ---
 
+## Payroll Management — Phase 2A (Payroll Run Creation & Retrieval)
+
+Status: IMPLEMENTED (AUTOMATED VALIDATION PASSED; LIVE MYSQL SMOKE NOT RUN)
+
+Implemented:
+
+- `POST /api/v1/payroll/runs`, authorized by `payroll.run.create`
+- `GET /api/v1/payroll/runs/{run_id}`, authorized by `payroll.run.read`
+- server-derived `initiated_by_user_id` from the authenticated current user
+- Payroll Run response DTOs, duplicate-period conflict handling, and missing-run 404
+- atomic Unit of Work commit with rollback on a database unique-period collision
+
+Payroll processing, retry, finalization, calculation, results, issues, and payslip
+generation remain unimplemented.
+
+Verification:
+
+- 48 focused Payroll Phase 2A and Phase 1 tests passed
+- 338 full-suite tests passed
+- Live MySQL smoke test was not performed
+
+---
+
 # Current Test Baseline
 
 At the Attendance milestone:
@@ -297,4 +327,4 @@ Remote repository:
 
 # Next Phase
 
-Compensation / Salary Management Phase 2 is complete. Payroll Phase 1 core backend layers are implemented; API integration and processing behaviors that require further authoritative contracts remain for later phases.
+Compensation / Salary Management Phase 2 is complete. Payroll Phase 1 core backend layers and Phase 2A Payroll Run creation/retrieval are implemented. Payroll processing behaviors that require further authoritative contracts remain for later phases.
