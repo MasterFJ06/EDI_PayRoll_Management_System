@@ -483,8 +483,33 @@ their financial totals. QA prevents a zero-eligible run from reaching
 with no persisted Payroll Results therefore returns HTTP 409 rather than
 fabricated zero totals.
 
-Employee-level result reports, salary-component breakdowns, dashboards, CSV
-exports, and employee self-service reports are deferred.
+Salary-component breakdowns, dashboards, CSV exports, and employee
+self-service reports are deferred.
+
+### Phase 2B-9B — Paginated Employee Payroll Results
+
+`GET /api/v1/reports/payroll/runs/{run_id}/results` requires authentication
+and the persisted `report.payroll.read` permission, assigned only to Payroll
+Administrator. A missing run returns HTTP 404. A run that is not `FINALIZED`
+returns HTTP 409. Authentication and permission failures return HTTP 401 and
+HTTP 403; invalid query parameters or cursors return HTTP 422.
+
+The read-only response contains `payroll_run_id`, `results`, and `pagination`.
+Each result contains only `payroll_result_id`, `payroll_run_id`, `employee_id`,
+`salary_assignment_id`, persisted `gross_earnings`, `total_deductions`,
+`net_salary`, `employee_code`, and `employee_name`. Financial values come from
+the persisted Payroll Result and are not recalculated. Employee labels come
+from current Employee master data, are not historical labels, and are returned
+as null if unavailable. The query uses a left outer join for labels.
+
+`limit` defaults to 50 and accepts values from 1 through 100. Results are
+ordered by `employee_id` and then `payroll_result_id`, both ascending. The
+opaque cursor is a deterministic, integrity-protected encoding bound to the
+requested run and the last result pair. Each query fetches at most `limit + 1`
+rows; `pagination` contains `limit`, `has_more`, and nullable `next_cursor`.
+There is no offset pagination or separate total-count query. Components,
+snapshots, attendance/leave details, contact/security data, and unrelated
+fields are not returned. No report-read audit event is written.
 
 ---
 

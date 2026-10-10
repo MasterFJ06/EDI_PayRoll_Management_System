@@ -122,6 +122,80 @@ def test_payroll_result_aggregate_excludes_results_from_other_runs() -> None:
     engine.dispose()
 
 
+def test_payroll_result_report_page_is_bounded_ordered_and_keeps_missing_labels() -> None:
+    from decimal import Decimal
+
+    from sqlalchemy import create_engine, event, text
+    from sqlalchemy.orm import Session
+
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE employees ("
+                "employee_id INTEGER PRIMARY KEY, employee_code VARCHAR(30), "
+                "first_name VARCHAR(100), last_name VARCHAR(100))"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE TABLE payroll_results ("
+                "payroll_result_id INTEGER PRIMARY KEY, payroll_run_id INTEGER, "
+                "employee_id INTEGER, salary_assignment_id INTEGER, "
+                "gross_earnings NUMERIC(15, 2), total_deductions NUMERIC(15, 2), "
+                "net_salary NUMERIC(15, 2), workforce_calculation_snapshot JSON)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO employees VALUES "
+                "(2, 'E-2', 'Current', 'Name'), (4, 'E-4', 'Next', 'Person')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO payroll_results VALUES "
+                "(8, 7, 2, 22, 1200.01, 20.00, 1180.01, 'snapshot'), "
+                "(9, 7, 4, 24, 1300.02, 30.00, 1270.02, 'snapshot'), "
+                "(10, 7, 6, 26, 1400.03, 40.00, 1360.03, 'snapshot'), "
+                "(11, 8, 1, 21, 9000.00, 0.00, 9000.00, NULL)"
+            )
+        )
+
+    executed_sql: list[str] = []
+
+    def capture_sql(
+        _connection, _cursor, statement, _parameters, _context, _executemany
+    ) -> None:
+        executed_sql.append(statement)
+
+    event.listen(
+        engine,
+        "before_cursor_execute",
+        capture_sql,
+    )
+    with Session(engine) as session:
+        repository = PayrollResultRepository(session)
+        first_page = repository.list_report_page(7, None, None, 3)
+        second_page = repository.list_report_page(7, 4, 9, 3)
+
+    assert [row.employee_id for row in first_page] == [2, 4, 6]
+    assert first_page[0].employee_name == "Current Name"
+    assert first_page[0].gross_earnings == Decimal("1200.01")
+    assert first_page[0].net_salary == Decimal("1180.01")
+    assert first_page[2].employee_code is None
+    assert first_page[2].employee_name is None
+    assert [row.employee_id for row in second_page] == [6]
+    assert all(row.payroll_run_id == 7 for row in first_page + second_page)
+    assert len(executed_sql) == 2
+    assert all("LEFT OUTER JOIN employees" in sql for sql in executed_sql)
+    assert all("payroll_results.payroll_run_id =" in sql for sql in executed_sql)
+    assert all("LIMIT" in sql for sql in executed_sql)
+    assert all("workforce_calculation_snapshot" not in sql for sql in executed_sql)
+    assert "payroll_results.employee_id >" in executed_sql[1]
+    engine.dispose()
+
+
 def test_payroll_run_attempt_fence_compiles_as_mysql_for_update() -> None:
     session = MagicMock()
     session.get_bind.return_value.dialect.name = "mysql"

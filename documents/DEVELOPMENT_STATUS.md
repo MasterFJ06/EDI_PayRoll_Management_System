@@ -684,3 +684,28 @@ Verification:
   API contract test is included in the manually triggered CI workflow
 - GitHub Actions MySQL 8 runtime validation is pending; no live MySQL result is
   claimed
+
+## Reporting & Analytics — Phase 2B-9B Employee Payroll Results Report
+
+Implemented the read-only, finalized-run employee Payroll Result report at
+`GET /api/v1/reports/payroll/runs/{run_id}/results`. It uses the existing
+persisted `report.payroll.read` permission and a run-scoped keyset query ordered
+by employee and result identifiers. The projection returns only persisted
+financial totals, identifiers, and current Employee code/name labels. A
+deterministic HMAC-protected cursor is bound to the requested run. Components,
+snapshots, dashboards, exports, and employee self-service remain deferred. No
+schema change, migration, index, permission, or report-read audit event was
+added.
+
+Verification:
+
+- Reporting service and Payroll Result repository tests: 19 passed
+- Focused database safety and schema preparation tests: 58 passed
+- Full `tests/unit`: 640 passed
+- Reporting API tests: 21 collected; execution stalled on the first TestClient
+  request in the local Windows/Python 3.14 environment
+- Strict MySQL suite: 18 tests collected; runtime not executed locally
+- OpenAPI route, query parameters, and response statuses verified
+- `git diff --check` passed
+- Strict ephemeral MySQL 8 GitHub Actions validation remains pending; no live
+  result is claimed

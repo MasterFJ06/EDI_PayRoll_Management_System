@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from app.domain.payroll.payroll_processing_issue import PayrollProcessingIssue
 from app.domain.payroll.payroll_result import PayrollResult
+from app.domain.payroll.payroll_result_report import PayrollResultReportRecord
 from app.domain.payroll.payroll_result_component import PayrollResultComponent
 from app.domain.payroll.payroll_run import PayrollRun
 from app.domain.payroll.payroll_run_workforce_snapshot import (
@@ -102,6 +103,15 @@ class PayrollResultRepository(ABC):
 
     @abstractmethod
     def list_by_run(self, payroll_run_id: int) -> list[PayrollResult]: ...
+
+    @abstractmethod
+    def list_report_page(
+        self,
+        payroll_run_id: int,
+        after_employee_id: int | None,
+        after_payroll_result_id: int | None,
+        limit: int,
+    ) -> list[PayrollResultReportRecord]: ...
 
     @abstractmethod
     def aggregate_by_run(

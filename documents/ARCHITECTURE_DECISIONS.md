@@ -741,3 +741,38 @@ from current master data; there is no historical-label guarantee.
 Employee-level Payroll Result reports, component breakdowns, dashboards, CSV
 exports, and employee self-service reports remain deferred. This decision adds
 no database table or schema change.
+
+---
+
+# Decision 40 — Paginated Employee Payroll Results Report
+
+Employee-level Payroll Result reporting is authorized for a `FINALIZED` Payroll
+Run through `GET /api/v1/reports/payroll/runs/{run_id}/results`. Access requires
+the existing persisted `report.payroll.read` permission, initially assigned
+only to the Payroll Administrator role. This extends Decision 39 without
+changing its summary contract or erasing its original deferrals.
+
+The report reads only the authoritative persisted Payroll Result records for
+the requested run and never recalculates payroll. A missing run returns HTTP
+404 and a run that is not `FINALIZED` returns HTTP 409. The response includes
+only the result identifier, run identifier, employee identifier, salary
+assignment identifier, persisted gross earnings, total deductions, net salary,
+and employee code/name labels. Employee labels come from current Employee
+master data and are not historically snapshotted. The query uses a left outer
+join so an unavailable label does not discard a persisted result.
+
+Results are ordered by `employee_id` ascending and then
+`payroll_result_id` ascending and use keyset pagination on that pair. The
+default page limit is 50 and the maximum is 100. The opaque cursor contains the
+requested run identifier and the last returned sort-key pair; malformed,
+invalid, or cross-run cursors are rejected with HTTP 422. Each database query
+is bounded to at most `limit + 1` rows to determine whether another page exists.
+The query always filters by the requested run identifier. No offset pagination
+or separate total-count query is used. Cursor payloads use deterministic
+base64url JSON protected by HMAC-SHA256 with the configured application signing
+key and a report-specific message prefix, so clients cannot alter a valid
+cursor's run or position.
+
+Component breakdowns, dashboards, exports, employee self-service, and
+historical-label snapshots remain deferred. This decision adds no table,
+schema change, migration, permission, or audit event.

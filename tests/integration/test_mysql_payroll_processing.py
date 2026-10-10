@@ -42,6 +42,10 @@ class SeededPayroll:
     policy_version_id: int
     payroll_run_id: int
     correlation_id: str
+    extra_employee_ids: tuple[int, ...] = ()
+    extra_salary_assignment_ids: tuple[int, ...] = ()
+    extra_payroll_run_ids: tuple[int, ...] = ()
+    extra_users: tuple[tuple[int, str], ...] = ()
 
 
 @pytest.fixture
@@ -661,6 +665,230 @@ def test_finalized_payroll_summary_uses_persisted_results_and_rbac(real_mysql_pa
     assert not sensitive_fields & payload.keys()
 
 
+def test_finalized_payroll_results_report_paginates_persisted_rows_and_is_run_scoped(
+    real_mysql_payroll,
+) -> None:
+    engine, seed = real_mysql_payroll
+    _add_report_employee(engine, seed)
+    unprivileged_user_id, unprivileged_username = _add_report_unprivileged_user(
+        engine, seed
+    )
+    from app.infrastructure.persistence.models.employee import Employee
+    from app.infrastructure.persistence.models.payroll_result import PayrollResultModel
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    token = create_access_token(seed.user_id, seed.username)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        non_finalized = client.get(
+            f"/api/v1/reports/payroll/runs/{seed.payroll_run_id}/results",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert non_finalized.status_code == 409, non_finalized.text
+        unprivileged_token = create_access_token(
+            unprivileged_user_id, unprivileged_username
+        )
+        forbidden = client.get(
+            f"/api/v1/reports/payroll/runs/{seed.payroll_run_id}/results",
+            headers={"Authorization": f"Bearer {unprivileged_token}"},
+        )
+        assert forbidden.status_code == 403, forbidden.text
+
+    _finalize_seed_run(seed)
+    other_run_id = _add_other_run_result(engine, seed)
+    from app.application.reporting.payroll_results_report_service import (
+        encode_payroll_results_cursor,
+    )
+
+    with Session(engine) as session:
+        expected_rows = session.execute(
+            select(
+                PayrollResultModel.payroll_result_id,
+                PayrollResultModel.payroll_run_id,
+                PayrollResultModel.employee_id,
+                PayrollResultModel.salary_assignment_id,
+                PayrollResultModel.gross_earnings,
+                PayrollResultModel.total_deductions,
+                PayrollResultModel.net_salary,
+                Employee.employee_code,
+                Employee.first_name,
+                Employee.last_name,
+            )
+            .outerjoin(Employee, Employee.employee_id == PayrollResultModel.employee_id)
+            .where(PayrollResultModel.payroll_run_id == seed.payroll_run_id)
+            .order_by(PayrollResultModel.employee_id, PayrollResultModel.payroll_result_id)
+        ).all()
+    headers = {"Authorization": f"Bearer {token}"}
+    with TestClient(app, raise_server_exceptions=False) as client:
+        first = client.get(
+            f"/api/v1/reports/payroll/runs/{seed.payroll_run_id}/results?limit=1",
+            headers=headers,
+        )
+        assert first.status_code == 200, first.text
+        first_page = first.json()
+        assert len(first_page["results"]) == 1
+        assert first_page["pagination"]["has_more"] is True
+        cursor = first_page["pagination"]["next_cursor"]
+
+        second = client.get(
+            f"/api/v1/reports/payroll/runs/{seed.payroll_run_id}/results",
+            params={"limit": 1, "cursor": cursor},
+            headers=headers,
+        )
+        assert second.status_code == 200, second.text
+        second_page = second.json()
+        assert len(second_page["results"]) == 1
+        assert second_page["pagination"]["has_more"] is False
+        assert second_page["pagination"]["next_cursor"] is None
+
+        malformed = client.get(
+            f"/api/v1/reports/payroll/runs/{seed.payroll_run_id}/results",
+            params={"cursor": "not-a-cursor"},
+            headers=headers,
+        )
+        assert malformed.status_code == 422
+        cross_run = client.get(
+            f"/api/v1/reports/payroll/runs/{seed.payroll_run_id}/results",
+            params={
+                "cursor": encode_payroll_results_cursor(other_run_id, seed.employee_id, 1)
+            },
+            headers=headers,
+        )
+        assert cross_run.status_code == 422
+        other_run_page = client.get(
+            f"/api/v1/reports/payroll/runs/{other_run_id}/results",
+            headers=headers,
+        )
+        assert other_run_page.status_code == 200, other_run_page.text
+
+    report_rows = first_page["results"] + second_page["results"]
+    assert [row["employee_id"] for row in report_rows] == [
+        row.employee_id for row in expected_rows
+    ]
+    assert len({row["payroll_result_id"] for row in report_rows}) == 2
+    assert all(row["payroll_run_id"] == seed.payroll_run_id for row in report_rows)
+    assert other_run_page.json()["payroll_run_id"] == other_run_id
+    assert [row["payroll_run_id"] for row in other_run_page.json()["results"]] == [
+        other_run_id
+    ]
+    for actual, expected in zip(report_rows, expected_rows, strict=True):
+        assert actual == {
+            "payroll_result_id": expected.payroll_result_id,
+            "payroll_run_id": expected.payroll_run_id,
+            "employee_id": expected.employee_id,
+            "salary_assignment_id": expected.salary_assignment_id,
+            "gross_earnings": str(expected.gross_earnings),
+            "total_deductions": str(expected.total_deductions),
+            "net_salary": str(expected.net_salary),
+            "employee_code": expected.employee_code,
+            "employee_name": f"{expected.first_name} {expected.last_name}",
+        }
+
+
+def _add_report_employee(engine, seed: SeededPayroll) -> None:
+    from app.infrastructure.persistence.models.attendance import AttendanceRecord
+    from app.infrastructure.persistence.models.employee import Employee
+    from app.infrastructure.persistence.models.employee_salary_assignment import (
+        EmployeeSalaryAssignmentModel,
+    )
+
+    marker = uuid4().hex[:12]
+    today = date.today()
+    period_start = today.replace(day=1)
+    period_end = today.replace(day=28) + timedelta(days=4)
+    period_end = period_end.replace(day=1) - timedelta(days=1)
+    with Session(engine) as session:
+        employee = Employee(
+            employee_code=f"R9B-E{marker}",
+            user_id=None,
+            first_name="Report",
+            last_name=marker,
+            department_id=seed.department_id,
+            designation_id=seed.designation_id,
+            joining_date=date(2000, 1, 1),
+            employment_end_date=None,
+            employment_status="ACTIVE",
+        )
+        session.add(employee)
+        session.flush()
+        assignment = EmployeeSalaryAssignmentModel(
+            employee_id=employee.employee_id,
+            salary_revision_id=seed.salary_revision_id,
+            effective_from=date(2000, 1, 1),
+            effective_to=date(2099, 12, 31),
+        )
+        session.add(assignment)
+        cursor = period_start
+        while cursor <= period_end:
+            if cursor.isoweekday() < 6:
+                session.add(
+                    AttendanceRecord(
+                        employee_id=employee.employee_id,
+                        attendance_date=cursor,
+                        check_in_time=datetime.combine(cursor, time(9, 0)),
+                        check_out_time=datetime.combine(cursor, time(17, 0)),
+                        attendance_status="PRESENT",
+                    )
+                )
+            cursor += timedelta(days=1)
+        session.commit()
+        seed.extra_employee_ids += (employee.employee_id,)
+        seed.extra_salary_assignment_ids += (assignment.salary_assignment_id,)
+
+
+def _add_report_unprivileged_user(engine, seed: SeededPayroll) -> tuple[int, str]:
+    from app.infrastructure.persistence.models.user import User
+    from app.infrastructure.security.password import hash_password
+
+    username = f"r9b_noperm_{uuid4().hex[:12]}"
+    with Session(engine) as session:
+        user = User(
+            username=username,
+            email=f"{username}@example.invalid",
+            password_hash=hash_password("R9B synthetic credential"),
+            status="ACTIVE",
+        )
+        session.add(user)
+        session.commit()
+        seed.extra_users += ((user.user_id, username),)
+        return user.user_id, username
+
+
+def _add_other_run_result(engine, seed: SeededPayroll) -> int:
+    from app.infrastructure.persistence.models.payroll_result import PayrollResultModel
+    from app.infrastructure.persistence.models.payroll_run import PayrollRunModel
+
+    today = date.today()
+    previous_year = today.year - 1 if today.month == 1 else today.year
+    previous_month = 12 if today.month == 1 else today.month - 1
+    finalized_at = datetime.now()
+    with Session(engine) as session:
+        run = PayrollRunModel(
+            payroll_year=previous_year,
+            payroll_month=previous_month,
+            status="FINALIZED",
+            initiated_by_user_id=seed.user_id,
+            completed_at=finalized_at,
+            finalized_at=finalized_at,
+        )
+        session.add(run)
+        session.flush()
+        session.add(
+            PayrollResultModel(
+                payroll_run_id=run.payroll_run_id,
+                employee_id=seed.employee_id,
+                salary_assignment_id=seed.salary_assignment_id,
+                gross_earnings=Decimal("100.00"),
+                total_deductions=Decimal("0.00"),
+                net_salary=Decimal("100.00"),
+                workforce_calculation_snapshot=None,
+            )
+        )
+        session.commit()
+        seed.extra_payroll_run_ids += (run.payroll_run_id,)
+        return run.payroll_run_id
+
+
 def _seed_valid_payroll(engine) -> SeededPayroll:
     from app.infrastructure.persistence.models.attendance import AttendanceRecord
     from app.infrastructure.persistence.models.department import Department
@@ -876,14 +1104,21 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
     from app.infrastructure.persistence.models.work_calendar_weekly_rule import WorkCalendarWeeklyRuleModel
     from app.infrastructure.persistence.models.workforce_overtime_policy_version import WorkforceOvertimePolicyVersionModel
 
+    owned_run_ids = (seed.payroll_run_id, *seed.extra_payroll_run_ids)
+    owned_employee_ids = (seed.employee_id, *seed.extra_employee_ids)
+    owned_user_ids = (seed.user_id, *(user_id for user_id, _ in seed.extra_users))
+    owned_assignment_ids = (
+        seed.salary_assignment_id,
+        *seed.extra_salary_assignment_ids,
+    )
     with Session(engine) as session, session.begin():
         result_ids = select(PayrollResultModel.payroll_result_id).where(
-            PayrollResultModel.payroll_run_id == seed.payroll_run_id
+            PayrollResultModel.payroll_run_id.in_(owned_run_ids)
         )
         owned_payslip_ids = list(session.scalars(
             select(PayslipModel.payslip_id)
             .join(PayrollResultModel, PayslipModel.payroll_result_id == PayrollResultModel.payroll_result_id)
-            .where(PayrollResultModel.payroll_run_id == seed.payroll_run_id)
+            .where(PayrollResultModel.payroll_run_id.in_(owned_run_ids))
         ).all())
         _delete_owned_audit_events(
             session,
@@ -897,11 +1132,11 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
             PayslipModel.payslip_id.in_(owned_payslip_ids)
         ))
         session.execute(delete(PayrollResultComponentModel).where(PayrollResultComponentModel.payroll_result_id.in_(result_ids)))
-        session.execute(delete(PayrollResultModel).where(PayrollResultModel.payroll_run_id == seed.payroll_run_id))
-        session.execute(delete(PayrollProcessingIssueModel).where(PayrollProcessingIssueModel.payroll_run_id == seed.payroll_run_id))
-        session.execute(delete(PayrollRunWorkforceSnapshotModel).where(PayrollRunWorkforceSnapshotModel.payroll_run_id == seed.payroll_run_id))
-        session.execute(delete(AttendanceRecord).where(AttendanceRecord.employee_id == seed.employee_id))
-        session.execute(delete(EmployeeSalaryAssignmentModel).where(EmployeeSalaryAssignmentModel.salary_assignment_id == seed.salary_assignment_id))
+        session.execute(delete(PayrollResultModel).where(PayrollResultModel.payroll_run_id.in_(owned_run_ids)))
+        session.execute(delete(PayrollProcessingIssueModel).where(PayrollProcessingIssueModel.payroll_run_id.in_(owned_run_ids)))
+        session.execute(delete(PayrollRunWorkforceSnapshotModel).where(PayrollRunWorkforceSnapshotModel.payroll_run_id.in_(owned_run_ids)))
+        session.execute(delete(AttendanceRecord).where(AttendanceRecord.employee_id.in_(owned_employee_ids)))
+        session.execute(delete(EmployeeSalaryAssignmentModel).where(EmployeeSalaryAssignmentModel.salary_assignment_id.in_(owned_assignment_ids)))
         session.execute(delete(SalaryRevisionComponentModel).where(SalaryRevisionComponentModel.salary_revision_id == seed.salary_revision_id))
         session.execute(delete(SalaryRevisionModel).where(SalaryRevisionModel.salary_revision_id == seed.salary_revision_id))
         session.execute(delete(SalaryStructureModel).where(SalaryStructureModel.salary_structure_id == seed.salary_structure_id))
@@ -909,8 +1144,8 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
         session.execute(delete(WorkCalendarWeeklyRuleModel).where(WorkCalendarWeeklyRuleModel.work_calendar_version_id == seed.calendar_version_id))
         session.execute(delete(WorkCalendarVersionModel).where(WorkCalendarVersionModel.work_calendar_version_id == seed.calendar_version_id))
         session.execute(delete(WorkforceOvertimePolicyVersionModel).where(WorkforceOvertimePolicyVersionModel.workforce_overtime_policy_version_id == seed.policy_version_id))
-        session.execute(delete(PayrollRunModel).where(PayrollRunModel.payroll_run_id == seed.payroll_run_id))
-        session.execute(delete(Employee).where(Employee.employee_id == seed.employee_id))
+        session.execute(delete(PayrollRunModel).where(PayrollRunModel.payroll_run_id.in_(owned_run_ids)))
+        session.execute(delete(Employee).where(Employee.employee_id.in_(owned_employee_ids)))
         session.execute(delete(Department).where(Department.department_id == seed.department_id))
         session.execute(delete(Designation).where(Designation.designation_id == seed.designation_id))
         if seed.created_role_permission_ids:
@@ -940,7 +1175,7 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
                 )
         if seed.created_role:
             session.execute(delete(Role).where(Role.role_id == seed.role_id))
-        session.execute(delete(User).where(User.user_id == seed.user_id))
+        session.execute(delete(User).where(User.user_id.in_(owned_user_ids)))
 
 
 def _delete_owned_audit_events(
