@@ -100,7 +100,11 @@ def _generate(client: TestClient, **kwargs):
 def test_generate_payslip_requires_authentication_and_persisted_permission(
     client: TestClient, payslip_uow: PayslipUnitOfWork
 ) -> None:
-    assert _generate(client).status_code == 401
+    unauthenticated = client.post(
+        "/api/v1/payroll/runs/7/results/19/payslip",
+        json={"payslip_number": "PS-19"},
+    )
+    assert unauthenticated.status_code == 401
     payslip_uow.authorization.has_permission.return_value = False
     response = _generate(client)
     assert response.status_code == 403
@@ -136,7 +140,9 @@ def test_generate_payslip_uses_authenticated_actor_and_returns_null_document(
     assert payslip_uow.result.workforce_calculation_snapshot == {"frozen": True}
 
 
-def test_client_cannot_supply_generator_identity(client: TestClient) -> None:
+def test_client_cannot_supply_generator_identity(
+    client: TestClient, payslip_uow: PayslipUnitOfWork
+) -> None:
     response = _generate(client, generated_by_user_id=999)
     assert response.status_code == 422
 
@@ -193,6 +199,8 @@ def test_audit_failure_does_not_commit_payslip(
     assert payslip_uow.payslip is None
 
 
-def test_invalid_payslip_number_is_validated(client: TestClient) -> None:
+def test_invalid_payslip_number_is_validated(
+    client: TestClient, payslip_uow: PayslipUnitOfWork
+) -> None:
     response = _generate(client, payslip_number="x" * 51)
     assert response.status_code == 422
