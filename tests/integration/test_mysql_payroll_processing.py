@@ -797,6 +797,7 @@ def test_employee_report_uses_seeded_hr_permission_and_filters_persisted_rows(
     from app.infrastructure.persistence.models.department import Department
     from app.infrastructure.persistence.models.designation import Designation
     from app.infrastructure.persistence.models.employee import Employee
+    from app.infrastructure.persistence.models.permission import Permission
     from app.infrastructure.persistence.models.role import Role
     from app.infrastructure.persistence.models.role_permission import RolePermission
     from app.infrastructure.persistence.models.user import User
