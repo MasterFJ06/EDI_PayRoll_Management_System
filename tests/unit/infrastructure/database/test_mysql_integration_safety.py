@@ -13,6 +13,7 @@ from tests.integration.mysql_support import (
     TableDefinition,
     UniqueDefinition,
     _schema_differences,
+    _schema_difference_error,
     _parse_columns_and_constraints,
     mysql_test_url_from_environment,
     parse_mysql_test_url,
@@ -166,8 +167,32 @@ def test_column_diagnostics_identify_default_difference() -> None:
     actual_columns = dict(columns)
     actual_columns["name"] = replace(actual_columns["name"], default_sql="null")
     actual = replace(expected, columns=actual_columns)
-    errors = _schema_differences(expected, actual, "sample")
-    assert "sample.name.default_sql mismatch: expected None; actual 'null'" in errors
+    error = _schema_difference_error(_schema_differences(expected, actual, "sample"))
+    assert "sample.name.default_sql mismatch: expected None; actual 'null'" in str(error)
+
+
+def test_schema_verification_error_preserves_exact_column_and_check_details() -> None:
+    expected = _valid_definition()
+    actual_columns = dict(expected.columns)
+    actual_columns["name"] = replace(
+        actual_columns["name"],
+        type_sql="varchar(100)",
+        nullable=True,
+        default_sql="NULL",
+    )
+    actual = replace(
+        expected,
+        columns=actual_columns,
+        checks=frozenset({CheckDefinition("mysql_check_17", ("id", ">=", "0"))}),
+    )
+
+    error = _schema_difference_error(_schema_differences(expected, actual, "sample"))
+    message = str(error)
+    assert "sample.name.type_sql mismatch: expected 'varchar(50)'; actual 'varchar(100)'" in message
+    assert "sample.name.nullable mismatch: expected False; actual True" in message
+    assert "sample.name.default_sql mismatch: expected None; actual 'NULL'" in message
+    assert "sample.check 'ck_sample' expected expression ('id', '>', '0')" in message
+    assert "sample.check 'mysql_check_17' unexpected expression ('id', '>=', '0')" in message
 
 
 def test_current_snapshot_parser_captures_full_payroll_schema_definitions() -> None:

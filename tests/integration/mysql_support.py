@@ -422,6 +422,13 @@ def _schema_differences(expected: TableDefinition, actual: TableDefinition, tabl
     return errors
 
 
+def _schema_difference_error(differences: list[str]) -> SchemaVerificationError:
+    """Keep every field-level mismatch in the exception surfaced by pytest."""
+    return SchemaVerificationError(
+        "MySQL schema definition mismatch: " + "; ".join(differences)
+    )
+
+
 def _verify_schema_state(connection, prepared_schema: Path) -> None:
     expected = parse_schema_snapshot(prepared_schema)
     inspector = inspect(connection)
@@ -448,7 +455,7 @@ def _verify_schema_state(connection, prepared_schema: Path) -> None:
             ) from exc
     differences = [message for table in sorted(expected) for message in _schema_differences(expected[table], actual_definitions[table], table)]
     if differences:
-        raise SchemaVerificationError("MySQL schema definition mismatch: " + "; ".join(differences[:50]))
+        raise _schema_difference_error(differences)
     for table in expected:
         if connection.execute(text(f"SELECT 1 FROM `{table}` LIMIT 1")).first() is not None:
             raise SchemaVerificationError(f"Test table {table!r} is not empty before seeding.")
