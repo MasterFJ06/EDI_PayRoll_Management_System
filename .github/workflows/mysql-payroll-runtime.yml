@@ -94,15 +94,6 @@ jobs:
           test "$target" = $'8\tepms_r7_runtime_test'
           echo "Verified MySQL target: $target"
 
-      - name: Apply idempotent RBAC catalog seed to ephemeral database
-        shell: bash
-        env:
-          MYSQL_PWD: epms_r7_root_test_only
-        run: |
-          set -euo pipefail
-          mysql --protocol=TCP --host=127.0.0.1 --port=3306 --user=root \
-            --database=epms_r7_runtime_test < database/seed.sql
-
       - name: Run nineteen strict payroll and employee report MySQL integration tests (serial)
         run: python -m pytest -q tests/integration/test_mysql_payroll_processing.py
 

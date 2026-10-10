@@ -1,10 +1,38 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from sqlalchemy.dialects import mysql
 
 from app.infrastructure.persistence.models.audit_event import AuditEventModel
 from app.infrastructure.persistence.models.audit_event_change import AuditEventChangeModel
 from tests.integration.test_mysql_payroll_processing import _delete_owned_audit_events
+
+
+def test_runtime_workflow_leaves_rbac_seeding_to_the_integration_fixture() -> None:
+    repository_root = Path(__file__).resolve().parents[4]
+    workflow = (repository_root / ".github/workflows/mysql-payroll-runtime.yml").read_text(
+        encoding="utf-8"
+    )
+    fixture = (repository_root / "tests/integration/test_mysql_payroll_processing.py").read_text(
+        encoding="utf-8"
+    )
+    schema_guard = (repository_root / "tests/integration/mysql_support.py").read_text(
+        encoding="utf-8"
+    )
+    production_seed = (repository_root / "database/seed.sql").read_text(
+        encoding="utf-8"
+    )
+
+    assert "< \"$EPMS_PREPARED_SCHEMA\"" in workflow
+    assert "database/seed.sql" not in workflow
+    assert "_get_or_create_permission(" in fixture
+    assert "_verify_schema_state(connection, prepared_schema)" in (
+        repository_root / "tests/integration/conftest.py"
+    ).read_text(encoding="utf-8")
+    assert "is not empty before seeding" in schema_guard
+    assert "VALUES ('HR Administrator', 'Administration of employee reporting.')" in production_seed
+    assert "p.permission_code = 'report.employee.read'" in production_seed
 
 
 class _ScalarResult:
