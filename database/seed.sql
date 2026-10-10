@@ -2,6 +2,9 @@
 INSERT IGNORE INTO roles (role_name, description)
 VALUES ('Payroll Administrator', 'Administration of payroll operations.');
 
+INSERT IGNORE INTO roles (role_name, description)
+VALUES ('HR Administrator', 'Administration of employee reporting.');
+
 INSERT IGNORE INTO permissions (permission_code, description)
 VALUES
     ('payroll.run.create', 'Create a payroll run.'),
@@ -11,6 +14,7 @@ VALUES
     ('payroll.run.finalize', 'Finalize a processed payroll run.'),
     ('payroll.payslip.create', 'Generate an individual payslip record.'),
     ('report.payroll.read', 'View finalized payroll run summaries.'),
+    ('report.employee.read', 'View organization-wide employee reports.'),
     ('organization.calendar.read', 'View organization work calendar versions.'),
     ('organization.calendar.manage', 'Manage organization work calendar versions and overrides.'),
     ('workforce.leave_type.manage', 'Create and manage Leave Types.'),
@@ -34,3 +38,10 @@ JOIN permissions AS p
       'report.payroll.read'
   )
 WHERE r.role_name = 'Payroll Administrator';
+
+INSERT IGNORE INTO role_permissions (role_id, permission_id)
+SELECT r.role_id, p.permission_id
+FROM roles AS r
+JOIN permissions AS p
+  ON p.permission_code = 'report.employee.read'
+WHERE r.role_name = 'HR Administrator';

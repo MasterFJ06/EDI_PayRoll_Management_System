@@ -785,6 +785,174 @@ def test_finalized_payroll_results_report_paginates_persisted_rows_and_is_run_sc
         }
 
 
+def test_employee_report_uses_seeded_hr_permission_and_filters_persisted_rows(
+    real_mysql_payroll,
+) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.department import Department
+    from app.infrastructure.persistence.models.designation import Designation
+    from app.infrastructure.persistence.models.employee import Employee
+    from app.infrastructure.persistence.models.permission import Permission
+    from app.infrastructure.persistence.models.role import Role
+    from app.infrastructure.persistence.models.role_permission import RolePermission
+    from app.infrastructure.persistence.models.user import User
+    from app.infrastructure.persistence.models.user_role import UserRole
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    username = f"r9c1_hr_{uuid4().hex[:12]}"
+    unprivileged_user_id, unprivileged_username = _add_report_unprivileged_user(
+        engine, seed
+    )
+    with Session(engine) as session:
+        hr_role = session.scalar(
+            select(Role).where(Role.role_name == "HR Administrator")
+        )
+        permission = session.scalar(
+            select(Permission).where(
+                Permission.permission_code == "report.employee.read"
+            )
+        )
+        assert hr_role is not None
+        assert permission is not None
+        assert session.get(
+            RolePermission, (hr_role.role_id, permission.permission_id)
+        ) is not None
+        hr_permission_codes = session.scalars(
+            select(Permission.permission_code)
+            .join(RolePermission, RolePermission.permission_id == Permission.permission_id)
+            .where(RolePermission.role_id == hr_role.role_id)
+        ).all()
+        assert hr_permission_codes == ["report.employee.read"]
+
+        hr_user = User(
+            username=username,
+            email=f"{username}@example.invalid",
+            password_hash="integration-only-not-used-for-login",
+            status="ACTIVE",
+        )
+        second_employee = Employee(
+            employee_code=f"R9C1-{uuid4().hex[:12]}",
+            user_id=None,
+            first_name="Inactive",
+            last_name="Report",
+            department_id=seed.department_id,
+            designation_id=seed.designation_id,
+            joining_date=date(2018, 5, 1),
+            employment_end_date=date(2025, 2, 1),
+            employment_status="INACTIVE",
+        )
+        third_employee = Employee(
+            employee_code=f"R9C1-{uuid4().hex[:12]}",
+            user_id=None,
+            first_name="Terminated",
+            last_name="Report",
+            department_id=seed.department_id,
+            designation_id=seed.designation_id,
+            joining_date=date(2017, 4, 1),
+            employment_end_date=date(2024, 3, 1),
+            employment_status="TERMINATED",
+        )
+        session.add_all([hr_user, second_employee, third_employee])
+        session.flush()
+        session.add(
+            UserRole(
+                user_id=hr_user.user_id,
+                role_id=hr_role.role_id,
+                assigned_by_user_id=seed.user_id,
+            )
+        )
+        session.commit()
+        hr_user_id = hr_user.user_id
+        seed.extra_users += ((hr_user_id, username),)
+        seed.extra_employee_ids += (
+            second_employee.employee_id,
+            third_employee.employee_id,
+        )
+        first_employee_code = session.get(Employee, seed.employee_id).employee_code
+        expected_department_name = session.get(
+            Department, seed.department_id
+        ).department_name
+        expected_designation_name = session.get(
+            Designation, seed.designation_id
+        ).designation_name
+
+    hr_headers = {
+        "Authorization": f"Bearer {create_access_token(hr_user_id, username)}"
+    }
+    payroll_headers = {
+        "Authorization": f"Bearer {create_access_token(seed.user_id, seed.username)}"
+    }
+    unprivileged_headers = {
+        "Authorization": f"Bearer {create_access_token(unprivileged_user_id, unprivileged_username)}"
+    }
+    with TestClient(app, raise_server_exceptions=False) as client:
+        denied = client.get("/api/v1/reports/employees", headers=payroll_headers)
+        assert denied.status_code == 403, denied.text
+        no_role = client.get(
+            "/api/v1/reports/employees", headers=unprivileged_headers
+        )
+        assert no_role.status_code == 403, no_role.text
+
+        first = client.get(
+            "/api/v1/reports/employees", params={"limit": 1}, headers=hr_headers
+        )
+        assert first.status_code == 200, first.text
+        first_body = first.json()
+        assert first_body["pagination"]["has_more"] is True
+        assert first_body["employees"][0]["employee_id"] == seed.employee_id
+        assert first_body["employees"][0]["department_name"] == expected_department_name
+        assert first_body["employees"][0]["designation_name"] == expected_designation_name
+        assert set(first_body["employees"][0]) == {
+            "employee_id", "employee_code", "first_name", "last_name",
+            "department_id", "department_name", "designation_id",
+            "designation_name", "joining_date", "employment_end_date",
+            "employment_status",
+        }
+
+        second = client.get(
+            "/api/v1/reports/employees",
+            params={"limit": 1, "cursor": first_body["pagination"]["next_cursor"]},
+            headers=hr_headers,
+        )
+        assert second.status_code == 200, second.text
+        assert second.json()["employees"][0]["employee_id"] == seed.employee_id + 1
+
+        exact_code = client.get(
+            "/api/v1/reports/employees",
+            params={"employee_code": first_employee_code},
+            headers=hr_headers,
+        )
+        assert exact_code.status_code == 200
+        assert [row["employee_code"] for row in exact_code.json()["employees"]] == [
+            first_employee_code
+        ]
+
+        filtered = client.get(
+            "/api/v1/reports/employees",
+            params={
+                "department_id": seed.department_id,
+                "designation_id": seed.designation_id,
+                "employment_status": "TERMINATED",
+            },
+            headers=hr_headers,
+        )
+        assert filtered.status_code == 200
+        assert [row["employment_status"] for row in filtered.json()["employees"]] == [
+            "TERMINATED"
+        ]
+        mismatch = client.get(
+            "/api/v1/reports/employees",
+            params={
+                "limit": 1,
+                "cursor": first_body["pagination"]["next_cursor"],
+                "employment_status": "ACTIVE",
+            },
+            headers=hr_headers,
+        )
+        assert mismatch.status_code == 422
+
+
 def _add_report_employee(engine, seed: SeededPayroll) -> None:
     from app.infrastructure.persistence.models.attendance import AttendanceRecord
     from app.infrastructure.persistence.models.employee import Employee

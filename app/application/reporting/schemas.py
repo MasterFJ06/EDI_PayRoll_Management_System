@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 from typing import Literal
 
@@ -40,3 +41,28 @@ class EmployeePayrollResultReportPage(BaseModel):
     payroll_run_id: int
     results: list[EmployeePayrollResultReportRow]
     pagination: PayrollResultsReportPagination
+
+
+class EmployeeReportRow(BaseModel):
+    employee_id: int
+    employee_code: str
+    first_name: str
+    last_name: str
+    department_id: int
+    department_name: str | None
+    designation_id: int
+    designation_name: str | None
+    joining_date: date
+    employment_end_date: date | None
+    employment_status: Literal["ACTIVE", "INACTIVE", "TERMINATED"]
+
+
+class EmployeeReportPagination(BaseModel):
+    limit: int = Field(ge=1, le=100)
+    has_more: bool
+    next_cursor: str | None
+
+
+class EmployeeReportPage(BaseModel):
+    employees: list[EmployeeReportRow]
+    pagination: EmployeeReportPagination

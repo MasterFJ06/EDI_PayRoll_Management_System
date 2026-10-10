@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 
@@ -12,14 +12,21 @@ from app.application.reporting.payroll_results_report_service import (
     InvalidPayrollResultsCursor,
     PayrollResultsReportService,
 )
+from app.application.reporting.employee_report_service import (
+    EmployeeReportFilters,
+    EmployeeReportService,
+    InvalidEmployeeReportCursor,
+)
 from app.application.reporting.schemas import (
     EmployeePayrollResultReportPage,
+    EmployeeReportPage,
     FinalizedPayrollSummaryResponse,
 )
 from app.infrastructure.persistence.models.user import User
 
 
 router = APIRouter(prefix="/reports/payroll", tags=["Payroll Reports"])
+employee_report_router = APIRouter(prefix="/reports", tags=["Employee Reports"])
 
 
 @router.get(
@@ -68,3 +75,36 @@ def get_finalized_payroll_results(
             detail="Payroll Run not found.",
         )
     return page
+
+
+@employee_report_router.get(
+    "/employees",
+    response_model=EmployeeReportPage,
+)
+def get_employee_report(
+    current_user: Annotated[
+        User, Depends(require_permission("report.employee.read"))
+    ],
+    uow: Annotated[UnitOfWork, Depends(get_unit_of_work)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    cursor: Annotated[str | None, Query(max_length=2048)] = None,
+    employee_code: Annotated[str | None, Query(min_length=1, max_length=30)] = None,
+    department_id: Annotated[int | None, Query(gt=0)] = None,
+    designation_id: Annotated[int | None, Query(gt=0)] = None,
+    employment_status: Annotated[
+        Literal["ACTIVE", "INACTIVE", "TERMINATED"] | None, Query()
+    ] = None,
+) -> EmployeeReportPage:
+    filters = EmployeeReportFilters(
+        employee_code=employee_code,
+        department_id=department_id,
+        designation_id=designation_id,
+        employment_status=employment_status,
+    )
+    try:
+        return EmployeeReportService(uow).get_page(limit, filters, cursor)
+    except InvalidEmployeeReportCursor as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid employee report cursor.",
+        ) from exc

@@ -776,3 +776,37 @@ cursor's run or position.
 Component breakdowns, dashboards, exports, employee self-service, and
 historical-label snapshots remain deferred. This decision adds no table,
 schema change, migration, permission, or audit event.
+
+---
+
+# Decision 41 — Organization-Wide Employee Report
+
+The read-only organization-wide employee report is available at
+`GET /api/v1/reports/employees`. Access requires authenticated access and the
+persisted `report.employee.read` permission. The development seed assigns this
+permission only to the `HR Administrator` role. It does not add this permission
+to `Payroll Administrator`, and the HR role does not receive payroll,
+attendance, or leave report permissions through this decision.
+
+The response contains exactly `employee_id`, `employee_code`, `first_name`,
+`last_name`, `department_id`, `department_name`, `designation_id`,
+`designation_name`, `joining_date`, `employment_end_date`, and
+`employment_status`. Department and designation labels are resolved from
+current master data; historical label accuracy is not guaranteed. The report
+does not expose user, manager, contact, credential, security, or other
+unapproved employee fields.
+
+The report includes employees of every supported status by default and may be
+filtered by exact employee code, department ID, designation ID, or supported
+employment status. It uses keyset pagination ordered by ascending employee ID,
+with a default limit of 50 and maximum of 100. The query is bounded to at most
+`limit + 1` rows. Its opaque cursor is deterministic base64url JSON protected
+by HMAC-SHA256 using the configured application signing key, has an
+employee-report-specific discriminator, and is bound to the active filters.
+Malformed, tampered, or filter-mismatched cursors return HTTP 422. Unknown
+department or designation IDs produce an empty page when no employee matches.
+
+Attendance reports, leave reports, dashboards, exports, payroll reports,
+employee self-service, and historical labels remain outside this decision.
+This decision adds no table, column, index, migration, calculation, or audit
+event.

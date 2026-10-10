@@ -709,3 +709,15 @@ Verification:
 - `git diff --check` passed
 - Strict ephemeral MySQL 8 GitHub Actions validation remains pending; no live
   result is claimed
+
+## Reporting & Analytics — Phase 2B-9C-1 Employee Report
+
+Implemented `GET /api/v1/reports/employees` as an organization-wide,
+read-only, keyset-paginated report. It requires the persisted
+`report.employee.read` permission assigned only to the seeded HR Administrator
+role. The query selects only approved employee fields, left joins current
+department and designation names, applies exact optional filters, and uses a
+filter-bound HMAC cursor. No schema change, migration, or index was added.
+
+Local validation and strict ephemeral MySQL 8 GitHub Actions validation are
+pending. No live MySQL result is claimed.

@@ -511,6 +511,34 @@ There is no offset pagination or separate total-count query. Components,
 snapshots, attendance/leave details, contact/security data, and unrelated
 fields are not returned. No report-read audit event is written.
 
+### Phase 2B-9C-1 — Organization-Wide Employee Report
+
+`GET /api/v1/reports/employees` requires authentication and the persisted
+`report.employee.read` permission, initially assigned only to the
+`HR Administrator` role. Authentication and permission failures return HTTP
+401 and 403. Invalid filters, limits, or cursors return HTTP 422.
+
+The response contains `employees` and `pagination`. Each employee object
+contains exactly `employee_id`, `employee_code`, `first_name`, `last_name`,
+`department_id`, `department_name`, `designation_id`, `designation_name`,
+`joining_date`, `employment_end_date`, and `employment_status`. Department
+and designation labels use current master data and are nullable; they are not
+historical labels. User IDs, manager IDs, contact details, credentials, and
+security fields are excluded.
+
+The report includes all supported employment statuses by default. Optional
+exact filters are `employee_code`, `department_id`, `designation_id`, and
+`employment_status` (`ACTIVE`, `INACTIVE`, or `TERMINATED`). Unknown IDs return
+a successful empty page if no employee matches. `limit` defaults to 50 and
+accepts 1 through 100. Employees are ordered by ascending `employee_id`; the
+integrity-protected opaque cursor is bound to this report and the active
+filters. Each query fetches at most `limit + 1` rows. `pagination` contains
+`limit`, `has_more`, and nullable `next_cursor`. There is no offset pagination
+or separate total-count query. This endpoint does not produce an audit event.
+
+Attendance, leave, dashboard, export, and employee self-service reports remain
+deferred.
+
 ---
 
 # Authentication
@@ -535,15 +563,15 @@ active roles grant access. Missing or invalid authentication returns HTTP 401. A
 authenticated user without the required permission returns HTTP 403. Clients cannot
 provide the user identity, role, or permission used for the decision.
 
-The development seed catalog includes the `Payroll Administrator` role and granular
-permissions `payroll.run.create`, `payroll.run.read`, `payroll.run.process`,
-`payroll.run.retry`, `payroll.run.finalize`, `payroll.payslip.create`, and
-`report.payroll.read`. No
-user is assigned to the role by the seed data. Implemented
-Payroll Run operations are documented in the Phase 2A, Phase 2B-1, retry, and
-finalization sections above. Individual payslip record generation is
-implemented without document generation; payslip read/download operations
-remain unimplemented.
+The development seed catalog includes the `Payroll Administrator` role and
+granular permissions `payroll.run.create`, `payroll.run.read`,
+`payroll.run.process`, `payroll.run.retry`, `payroll.run.finalize`,
+`payroll.payslip.create`, and `report.payroll.read`, plus the
+`HR Administrator` role with only `report.employee.read`. No user is assigned
+to either role by the seed data. Implemented Payroll Run operations are
+documented in the Phase 2A, Phase 2B-1, retry, and finalization sections above.
+Individual payslip record generation is implemented without document
+generation; payslip read/download operations remain unimplemented.
 
 ---
 
