@@ -476,16 +476,16 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
     from app.infrastructure.persistence.models.work_calendar_weekly_rule import WorkCalendarWeeklyRuleModel
     from app.infrastructure.persistence.models.workforce_overtime_policy_version import WorkforceOvertimePolicyVersionModel
 
-    with Session(engine) as session:
+    with Session(engine) as session, session.begin():
         result_ids = select(PayrollResultModel.payroll_result_id).where(
             PayrollResultModel.payroll_run_id == seed.payroll_run_id
         )
-        audit_ids = select(AuditEventModel.audit_event_id).where(
-            AuditEventModel.resource_type == "PAYROLL_RUN",
-            AuditEventModel.resource_id == seed.payroll_run_id,
+        _delete_owned_audit_events(
+            session,
+            AuditEventModel,
+            AuditEventChangeModel,
+            seed.payroll_run_id,
         )
-        session.execute(delete(AuditEventChangeModel).where(AuditEventChangeModel.audit_event_id.in_(audit_ids)))
-        session.execute(delete(AuditEventModel).where(AuditEventModel.audit_event_id.in_(audit_ids)))
         session.execute(delete(PayrollResultComponentModel).where(PayrollResultComponentModel.payroll_result_id.in_(result_ids)))
         session.execute(delete(PayrollResultModel).where(PayrollResultModel.payroll_run_id == seed.payroll_run_id))
         session.execute(delete(PayrollProcessingIssueModel).where(PayrollProcessingIssueModel.payroll_run_id == seed.payroll_run_id))
@@ -508,4 +508,32 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
         session.execute(delete(Permission).where(Permission.permission_id == seed.permission_id))
         session.execute(delete(Role).where(Role.role_id == seed.role_id))
         session.execute(delete(User).where(User.user_id == seed.user_id))
-        session.commit()
+
+
+def _delete_owned_audit_events(
+    session: Session,
+    audit_event_model,
+    audit_event_change_model,
+    payroll_run_id: int,
+) -> list[int]:
+    """Delete this fixture run's audit rows without a MySQL self-select DELETE."""
+    audit_ids = list(
+        session.scalars(
+            select(audit_event_model.audit_event_id).where(
+                audit_event_model.resource_type == "PAYROLL_RUN",
+                audit_event_model.resource_id == payroll_run_id,
+            )
+        ).all()
+    )
+    if audit_ids:
+        session.execute(
+            delete(audit_event_change_model).where(
+                audit_event_change_model.audit_event_id.in_(audit_ids)
+            )
+        )
+        session.execute(
+            delete(audit_event_model).where(
+                audit_event_model.audit_event_id.in_(audit_ids)
+            )
+        )
+    return audit_ids
