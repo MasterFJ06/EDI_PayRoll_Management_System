@@ -147,6 +147,72 @@ def test_check_metadata_accepts_reliable_layout_and_identifier_quote_changes() -
     assert _schema_differences(expected, actual, "sample") == []
 
 
+def test_attendance_status_check_accepts_mysql_charset_introducers() -> None:
+    expected = _parse_columns_and_constraints(
+        """id INT NOT NULL, CONSTRAINT chk_attendance_status CHECK (
+        attendance_status IN ('PRESENT', 'ABSENT', 'HALF_DAY', 'ON_LEAVE', 'HOLIDAY'))""",
+        "InnoDB",
+    )
+    actual = _parse_columns_and_constraints(
+        """id INT NOT NULL, CONSTRAINT chk_attendance_status CHECK (
+        attendance_status IN (_utf8mb4'PRESENT', _utf8mb4'ABSENT',
+        _utf8mb4'HALF_DAY', _utf8mb4'ON_LEAVE', _utf8mb4'HOLIDAY'))""",
+        "InnoDB",
+    )
+    assert _schema_differences(expected, actual, "attendance_records") == []
+
+
+def test_attendance_time_check_accepts_redundant_predicate_grouping() -> None:
+    expected = _parse_columns_and_constraints(
+        """check_in_time DATETIME NULL, check_out_time DATETIME NULL,
+        CONSTRAINT chk_attendance_time_order CHECK (
+        check_out_time IS NULL OR check_in_time IS NULL OR check_out_time >= check_in_time)""",
+        "InnoDB",
+    )
+    actual = _parse_columns_and_constraints(
+        """check_in_time DATETIME NULL, check_out_time DATETIME NULL,
+        CONSTRAINT chk_attendance_time_order CHECK (
+        ((check_out_time IS NULL) OR (check_in_time IS NULL)
+        OR (check_out_time >= check_in_time)))""",
+        "InnoDB",
+    )
+    assert _schema_differences(expected, actual, "attendance_records") == []
+
+
+@pytest.mark.parametrize(
+    "actual_expression",
+    [
+        "attendance_status IN ('PRESENT', 'ABSENT', 'HALF_DAY', 'ON_LEAVE', 'WEEKEND')",
+        "attendance_status IN ('PRESENT', 'ABSENT', 'HALF_DAY', 'ON_LEAVE')",
+    ],
+)
+def test_attendance_status_check_keeps_allowed_values_and_conditions_strict(
+    actual_expression: str,
+) -> None:
+    expected = _parse_columns_and_constraints(
+        "id INT NOT NULL, CONSTRAINT chk_attendance_status CHECK "
+        "(attendance_status IN ('PRESENT', 'ABSENT', 'HALF_DAY', 'ON_LEAVE', 'HOLIDAY'))",
+        "InnoDB",
+    )
+    actual = _parse_columns_and_constraints(
+        f"id INT NOT NULL, CONSTRAINT chk_attendance_status CHECK ({actual_expression})",
+        "InnoDB",
+    )
+    assert _schema_differences(expected, actual, "attendance_records")
+
+
+def test_check_normalization_preserves_boolean_precedence() -> None:
+    expected = _parse_columns_and_constraints(
+        "id INT NOT NULL, CONSTRAINT ck_logic CHECK (id = 1 OR (id = 2 AND id = 3))",
+        "InnoDB",
+    )
+    actual = _parse_columns_and_constraints(
+        "id INT NOT NULL, CONSTRAINT ck_logic CHECK ((id = 1 OR id = 2) AND id = 3)",
+        "InnoDB",
+    )
+    assert _schema_differences(expected, actual, "sample")
+
+
 def test_check_normalization_does_not_equate_different_operators() -> None:
     expected = _parse_columns_and_constraints(
         "id INT NOT NULL, CONSTRAINT ck_positive CHECK (id > 0)", "InnoDB"
@@ -159,16 +225,35 @@ def test_check_normalization_does_not_equate_different_operators() -> None:
     assert any(">=" in item and "unexpected expression" in item for item in errors)
 
 
-def test_column_diagnostics_identify_default_difference() -> None:
+def test_nullable_missing_and_explicit_null_defaults_are_equivalent() -> None:
     expected = _valid_definition()
     columns = dict(expected.columns)
-    columns["name"] = replace(columns["name"], default_sql=None)
+    columns["name"] = replace(columns["name"], nullable=True, default_sql=None)
     expected = replace(expected, columns=columns)
     actual_columns = dict(columns)
     actual_columns["name"] = replace(actual_columns["name"], default_sql="null")
     actual = replace(expected, columns=actual_columns)
+    assert _schema_differences(expected, actual, "sample") == []
+
+
+@pytest.mark.parametrize(
+    ("nullable", "actual_default"),
+    [(False, "null"), (True, "'null'"), (True, "0"), (True, "current_timestamp")],
+)
+def test_default_comparison_preserves_non_equivalent_defaults(
+    nullable: bool, actual_default: str
+) -> None:
+    expected = _valid_definition()
+    columns = dict(expected.columns)
+    columns["name"] = replace(columns["name"], nullable=nullable, default_sql=None)
+    expected = replace(expected, columns=columns)
+    actual_columns = dict(expected.columns)
+    actual_columns["name"] = replace(
+        actual_columns["name"], nullable=nullable, default_sql=actual_default
+    )
+    actual = replace(expected, columns=actual_columns)
     error = _schema_difference_error(_schema_differences(expected, actual, "sample"))
-    assert "sample.name.default_sql mismatch: expected None; actual 'null'" in str(error)
+    assert "sample.name.default_sql mismatch" in str(error)
 
 
 def test_schema_verification_error_preserves_exact_column_and_check_details() -> None:

@@ -180,7 +180,16 @@ def _sql_tokens(value: str) -> tuple[str, ...]:
             end = index + 1
             while end < len(value) and (value[end].isalnum() or value[end] in "_$."):
                 end += 1
-            tokens.append(value[index:end].casefold())
+            word = value[index:end]
+            # MySQL may expose a character-set introducer immediately before a
+            # literal (for example _utf8mb4'PRESENT').
+            if not (
+                word.startswith("_")
+                and word[1:].isalnum()
+                and end < len(value)
+                and value[end] in "'\""
+            ):
+                tokens.append(word.casefold())
             index = end
         else:
             pair = value[index:index + 2]
@@ -191,22 +200,64 @@ def _sql_tokens(value: str) -> tuple[str, ...]:
                 tokens.append(char)
                 index += 1
 
-    # Remove only full-expression wrapping parentheses, not internal grouping.
-    while len(tokens) >= 2 and tokens[0] == "(" and tokens[-1] == ")":
-        depth = 0
-        wraps_all = True
-        for token_index, token in enumerate(tokens):
-            if token == "(":
+    return _normalize_expression_grouping(tuple(tokens))
+
+
+def _normalize_expression_grouping(tokens: tuple[str, ...]) -> tuple[str, ...]:
+    """Remove redundant predicate grouping while preserving boolean precedence."""
+    normalized: list[str] = []
+    index = 0
+    while index < len(tokens):
+        if tokens[index] != "(":
+            normalized.append(tokens[index])
+            index += 1
+            continue
+
+        depth = 1
+        end = index + 1
+        while end < len(tokens) and depth:
+            if tokens[end] == "(":
                 depth += 1
-            elif token == ")":
+            elif tokens[end] == ")":
                 depth -= 1
-                if depth == 0 and token_index != len(tokens) - 1:
-                    wraps_all = False
-                    break
-        if not wraps_all or depth != 0:
+            end += 1
+        if depth:
+            normalized.extend(tokens[index:])
             break
-        tokens = tokens[1:-1]
-    return tuple(tokens)
+
+        inner = _normalize_expression_grouping(tokens[index + 1:end - 1])
+        previous = normalized[-1] if normalized else None
+        is_call = previous is not None and previous not in {
+            "and", "or", "not", "in", "is", "between", "when", "then", "else"
+        } and (
+            previous.isidentifier() or previous.replace("$", "").isidentifier()
+        )
+        has_boolean_connector = _has_top_level_boolean_connector(inner)
+        wraps_entire_expression = index == 0 and end == len(tokens)
+        if is_call or (has_boolean_connector and not wraps_entire_expression):
+            normalized.extend(("(", *inner, ")"))
+        else:
+            normalized.extend(inner)
+        index = end
+    return tuple(normalized)
+
+
+def _has_top_level_boolean_connector(tokens: tuple[str, ...]) -> bool:
+    depth = 0
+    between_pending = False
+    for token in tokens:
+        if token == "(":
+            depth += 1
+        elif token == ")":
+            depth -= 1
+        elif depth == 0:
+            if token == "between":
+                between_pending = True
+            elif token == "and" and between_pending:
+                between_pending = False
+            elif token in {"and", "or"}:
+                return True
+    return False
 
 
 def _split_items(body: str) -> list[str]:
@@ -375,6 +426,13 @@ def _schema_differences(expected: TableDefinition, actual: TableDefinition, tabl
         for attribute in ("type_sql", "nullable", "default_sql", "generated", "on_update_sql", "auto_increment"):
             expected_value = getattr(expected_column, attribute)
             actual_value = getattr(actual_column, attribute)
+            if (
+                attribute == "default_sql"
+                and expected_column.nullable
+                and actual_column.nullable
+                and {expected_value, actual_value} == {None, "null"}
+            ):
+                continue
             if expected_value != actual_value:
                 errors.append(
                     f"{table}.{name}.{attribute} mismatch: expected {expected_value!r}; actual {actual_value!r}"
