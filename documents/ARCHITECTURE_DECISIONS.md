@@ -676,3 +676,45 @@ salary components. Future implementation work must test component-boundary
 rounding, percentage dependency bases, segment aggregation, period-level OT
 accumulation, and the difference between per-interval and accumulated OT
 rounding.
+
+---
+
+# Decision 38 — Individual Payslip Record Generation
+
+The first payslip-generation increment is an individual database record for one
+Payroll Result. It is available only when the specified Payroll Run is
+`FINALIZED` and the Payroll Result belongs to that run. The persisted Payroll
+Result and Payroll Result Components are the source of all financial values;
+generation performs no recalculation and does not modify Payroll Results,
+components, Workforce snapshots, or Payroll Run state. Decision 37's monetary
+values and precision remain unchanged.
+
+The endpoint is
+`POST /api/v1/payroll/runs/{run_id}/results/{result_id}/payslip`. It requires
+the authenticated actor to hold persisted permission `payroll.payslip.create`;
+the actor is never accepted from request data. A request supplies only the
+schema-required `payslip_number`. The response is a dedicated Payslip response
+including `generated_at` and nullable `document_path`; null indicates no
+document has been generated. Employee self-service, reads/downloads, bulk
+generation, and document/PDF creation are outside this increment.
+
+An existing payslip for the result returns HTTP 409. Database uniqueness on
+`payroll_result_id` and `payslip_number` remains authoritative; an expected
+concurrent uniqueness collision also returns HTTP 409. The missing run, missing
+result, or result not belonging to the specified run returns HTTP 404. A
+non-finalized run returns HTTP 409. Authentication and permission failures use
+HTTP 401 and HTTP 403 respectively; unexpected failures use the centralized,
+sanitized HTTP 500 response.
+
+Generation uses the existing parent Payroll Run lock discipline. Payslip row
+insertion and the `PAYSLIP_GENERATED` audit event share one Unit of Work
+transaction. The event records the authenticated actor, new payslip resource
+identifier, payroll run/result identifiers, and request correlation ID when
+available; it excludes salary amounts and other financial values. Any failure
+rolls back both writes.
+
+For record-only payslips, `payslips.document_path` is nullable. A null value
+means no document has been generated; empty, fabricated, and placeholder paths
+are not permitted. The schema snapshot and migration preserve existing document
+paths. No employee self-service or document-storage behavior is implied by this
+decision.

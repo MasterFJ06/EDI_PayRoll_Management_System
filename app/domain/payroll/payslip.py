@@ -11,7 +11,7 @@ class Payslip(Entity[int | None]):
         payroll_result_id: int,
         payslip_number: str,
         generated_by_user_id: int,
-        document_path: str,
+        document_path: str | None,
         generated_at: datetime | None = None,
     ) -> None:
         if payroll_result_id <= 0 or generated_by_user_id <= 0:

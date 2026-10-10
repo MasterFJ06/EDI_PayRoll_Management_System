@@ -1409,7 +1409,7 @@ CREATE TABLE payslips (
     generated_by_user_id BIGINT UNSIGNED NOT NULL,
     generated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    document_path VARCHAR(500) NOT NULL,
+    document_path VARCHAR(500) NULL,
 
     CONSTRAINT pk_payslips
         PRIMARY KEY (payslip_id),

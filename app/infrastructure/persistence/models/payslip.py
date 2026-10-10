@@ -52,4 +52,4 @@ class PayslipModel(Base):
     generated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP")
     )
-    document_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    document_path: Mapped[str | None] = mapped_column(String(500), nullable=True)

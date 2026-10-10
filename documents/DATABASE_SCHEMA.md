@@ -226,7 +226,8 @@ stores processing/validation issues.
 
 `payslips`
 
-stores generated payslip records.
+stores generated payslip records. `document_path` is nullable until document
+generation is implemented; record-only payslips have no document path.
 
 ---
 

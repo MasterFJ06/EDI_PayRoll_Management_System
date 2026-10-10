@@ -33,6 +33,7 @@ _REQUIRED_PATH_TABLES = {
     "workforce_overtime_policy_versions", "payroll_runs", "payroll_results",
     "payroll_result_components", "payroll_processing_issues",
     "payroll_run_workforce_snapshots", "audit_events", "audit_event_changes",
+    "payslips",
 }
 
 

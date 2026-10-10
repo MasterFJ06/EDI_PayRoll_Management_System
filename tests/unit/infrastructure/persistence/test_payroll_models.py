@@ -148,7 +148,7 @@ def test_payroll_models_match_authoritative_column_names_and_nullability() -> No
         "payroll_results": {"workforce_calculation_snapshot"},
         "payroll_result_components": set(),
         "payroll_processing_issues": {"employee_id", "resolved_at"},
-        "payslips": set(),
+        "payslips": {"document_path"},
     }
     for name, model in PAYROLL_MODELS.items():
         assert set(model.__table__.columns.keys()) == expected[name]

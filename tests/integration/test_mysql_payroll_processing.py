@@ -29,6 +29,7 @@ class SeededPayroll:
     role_id: int
     permission_id: int
     finalize_permission_id: int
+    payslip_permission_id: int
     salary_structure_id: int
     salary_component_id: int
     salary_revision_id: int
@@ -470,6 +471,139 @@ def test_finalization_and_audit_roll_back_together_on_audit_failure(
         assert audit is None
 
 
+def _finalize_seed_run(seed: SeededPayroll) -> None:
+    _process_for_finalization(seed)
+    response = _finalize_request(seed)
+    assert response.status_code == 200, response.text
+
+
+def _generate_payslip(engine, seed: SeededPayroll):
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    token = create_access_token(seed.user_id, seed.username)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        return client.post(
+            f"/api/v1/payroll/runs/{seed.payroll_run_id}/results/{_result_id(engine, seed)}/payslip",
+            json={"payslip_number": f"PS-{seed.correlation_id}"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+
+def _result_id(engine, seed: SeededPayroll) -> int:
+    from app.infrastructure.persistence.models.payroll_result import PayrollResultModel
+
+    with Session(engine) as session:
+        result_id = session.scalar(
+            select(PayrollResultModel.payroll_result_id).where(
+                PayrollResultModel.payroll_run_id == seed.payroll_run_id
+            )
+        )
+    assert result_id is not None
+    return result_id
+
+
+def test_generates_finalized_payslip_and_audit_atomically(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    _finalize_seed_run(seed)
+    response = _generate_payslip(engine, seed)
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["payroll_result_id"] == _result_id(engine, seed)
+    assert body["generated_by_user_id"] == seed.user_id
+    assert body["generated_at"]
+    assert body["document_path"] is None
+    from app.infrastructure.persistence.models.audit_event import AuditEventModel
+    from app.infrastructure.persistence.models.payslip import PayslipModel
+    with Session(engine) as session:
+        payslip = session.get(PayslipModel, body["payslip_id"])
+        audit = session.scalar(select(AuditEventModel).where(
+            AuditEventModel.action_type == "PAYSLIP_GENERATED",
+            AuditEventModel.resource_id == body["payslip_id"],
+        ))
+        assert payslip is not None and payslip.document_path is None
+        assert audit is not None and audit.actor_user_id == seed.user_id
+        assert audit.correlation_id == response.headers["X-Request-ID"]
+
+
+def test_payslip_generation_requires_finalized_run(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    _process_for_finalization(seed)
+    response = _generate_payslip(engine, seed)
+    assert response.status_code == 409
+    from app.infrastructure.persistence.models.payslip import PayslipModel
+    with Session(engine) as session:
+        assert session.scalar(select(func.count()).select_from(PayslipModel)) == 0
+
+
+def test_duplicate_payslip_generation_returns_conflict(real_mysql_payroll) -> None:
+    _engine, seed = real_mysql_payroll
+    _finalize_seed_run(seed)
+    assert _generate_payslip(_engine, seed).status_code == 201
+    assert _generate_payslip(_engine, seed).status_code == 409
+
+
+def test_concurrent_payslip_generation_has_one_winner(real_mysql_payroll) -> None:
+    _engine, seed = real_mysql_payroll
+    _finalize_seed_run(seed)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(lambda _index: _generate_payslip(_engine, seed), range(2)))
+    assert sorted(response.status_code for response in responses) == [201, 409]
+
+
+def test_payslip_and_audit_roll_back_together_on_audit_failure(
+    real_mysql_payroll, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine, seed = real_mysql_payroll
+    _finalize_seed_run(seed)
+    from app.infrastructure.persistence.models.audit_event import AuditEventModel
+    from app.infrastructure.persistence.models.payslip import PayslipModel
+    from app.infrastructure.persistence.repositories.audit_event_repository import AuditEventRepository
+
+    original_add = AuditEventRepository.add
+
+    def fail_payslip_audit(repository, event, changes=()):
+        if event.action_type == "PAYSLIP_GENERATED":
+            raise RuntimeError("R8 controlled payslip audit fault")
+        return original_add(repository, event, changes)
+
+    monkeypatch.setattr(AuditEventRepository, "add", fail_payslip_audit)
+    response = _generate_payslip(engine, seed)
+    assert response.status_code == 500
+    with Session(engine) as session:
+        assert session.scalar(select(func.count()).select_from(PayslipModel)) == 0
+        assert session.scalar(select(func.count()).select_from(AuditEventModel).where(
+            AuditEventModel.action_type == "PAYSLIP_GENERATED"
+        )) == 0
+
+
+def test_payslip_generation_preserves_finalized_financial_data(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    _finalize_seed_run(seed)
+    from app.infrastructure.persistence.models.payroll_result import PayrollResultModel
+    from app.infrastructure.persistence.models.payroll_result_component import PayrollResultComponentModel
+    from app.infrastructure.persistence.models.payroll_run import PayrollRunModel
+    from app.infrastructure.persistence.models.payroll_run_workforce_snapshot import PayrollRunWorkforceSnapshotModel
+    with Session(engine) as session:
+        result = session.scalar(select(PayrollResultModel).where(PayrollResultModel.payroll_run_id == seed.payroll_run_id))
+        assert result is not None
+        result_values = (result.gross_earnings, result.total_deductions, result.net_salary, result.workforce_calculation_snapshot)
+        components = list(session.scalars(select(PayrollResultComponentModel).where(PayrollResultComponentModel.payroll_result_id == result.payroll_result_id)))
+        component_values = [(row.salary_component_id, row.component_type, row.amount, row.calculation_order) for row in components]
+        snapshot = session.get(PayrollRunWorkforceSnapshotModel, (seed.payroll_run_id, seed.employee_id))
+        snapshot_value = snapshot.snapshot
+    assert _generate_payslip(engine, seed).status_code == 201
+    with Session(engine) as session:
+        result = session.get(PayrollResultModel, result.payroll_result_id)
+        components = list(session.scalars(select(PayrollResultComponentModel).where(PayrollResultComponentModel.payroll_result_id == result.payroll_result_id)))
+        snapshot = session.get(PayrollRunWorkforceSnapshotModel, (seed.payroll_run_id, seed.employee_id))
+        run = session.get(PayrollRunModel, seed.payroll_run_id)
+        assert (result.gross_earnings, result.total_deductions, result.net_salary, result.workforce_calculation_snapshot) == result_values
+        assert [(row.salary_component_id, row.component_type, row.amount, row.calculation_order) for row in components] == component_values
+        assert snapshot.snapshot == snapshot_value
+        assert run.status == "FINALIZED"
+
+
 def _seed_valid_payroll(engine) -> SeededPayroll:
     from app.infrastructure.persistence.models.attendance import AttendanceRecord
     from app.infrastructure.persistence.models.department import Department
@@ -508,6 +642,9 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
         finalize_permission = Permission(
             permission_code="payroll.run.finalize", description="R7 test"
         )
+        payslip_permission = Permission(
+            permission_code="payroll.payslip.create", description="R8 test"
+        )
         department = Department(
             department_code=f"R6D{marker}", department_name=f"R6 Department {marker}", status="ACTIVE"
         )
@@ -520,12 +657,13 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
         component = SalaryComponentModel(
             component_code=f"R6C{marker}", component_name=f"R6 Base {marker}", component_type="EARNING", status="ACTIVE"
         )
-        session.add_all([user, role, permission, finalize_permission, department, designation, structure, component])
+        session.add_all([user, role, permission, finalize_permission, payslip_permission, department, designation, structure, component])
         session.flush()
         session.add_all([
             UserRole(user_id=user.user_id, role_id=role.role_id, assigned_by_user_id=user.user_id),
             RolePermission(role_id=role.role_id, permission_id=permission.permission_id),
             RolePermission(role_id=role.role_id, permission_id=finalize_permission.permission_id),
+            RolePermission(role_id=role.role_id, permission_id=payslip_permission.permission_id),
         ])
         employee = Employee(
             employee_code=f"R6E{marker}", user_id=None, first_name="Test", last_name=marker,
@@ -605,6 +743,7 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
             role_id=role.role_id,
             permission_id=permission.permission_id,
             finalize_permission_id=finalize_permission.permission_id,
+            payslip_permission_id=payslip_permission.permission_id,
             salary_structure_id=structure.salary_structure_id,
             salary_component_id=component.salary_component_id,
             salary_revision_id=revision.salary_revision_id,
@@ -629,6 +768,7 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
     from app.infrastructure.persistence.models.payroll_result_component import PayrollResultComponentModel
     from app.infrastructure.persistence.models.payroll_run import PayrollRunModel
     from app.infrastructure.persistence.models.payroll_run_workforce_snapshot import PayrollRunWorkforceSnapshotModel
+    from app.infrastructure.persistence.models.payslip import PayslipModel
     from app.infrastructure.persistence.models.permission import Permission
     from app.infrastructure.persistence.models.role import Role
     from app.infrastructure.persistence.models.role_permission import RolePermission
@@ -646,12 +786,21 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
         result_ids = select(PayrollResultModel.payroll_result_id).where(
             PayrollResultModel.payroll_run_id == seed.payroll_run_id
         )
+        owned_payslip_ids = list(session.scalars(
+            select(PayslipModel.payslip_id)
+            .join(PayrollResultModel, PayslipModel.payroll_result_id == PayrollResultModel.payroll_result_id)
+            .where(PayrollResultModel.payroll_run_id == seed.payroll_run_id)
+        ).all())
         _delete_owned_audit_events(
             session,
             AuditEventModel,
             AuditEventChangeModel,
             seed.payroll_run_id,
+            owned_payslip_ids,
         )
+        session.execute(delete(PayslipModel).where(
+            PayslipModel.payslip_id.in_(owned_payslip_ids)
+        ))
         session.execute(delete(PayrollResultComponentModel).where(PayrollResultComponentModel.payroll_result_id.in_(result_ids)))
         session.execute(delete(PayrollResultModel).where(PayrollResultModel.payroll_run_id == seed.payroll_run_id))
         session.execute(delete(PayrollProcessingIssueModel).where(PayrollProcessingIssueModel.payroll_run_id == seed.payroll_run_id))
@@ -671,7 +820,7 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
         session.execute(delete(Designation).where(Designation.designation_id == seed.designation_id))
         session.execute(delete(RolePermission).where(RolePermission.role_id == seed.role_id))
         session.execute(delete(UserRole).where(UserRole.user_id == seed.user_id))
-        session.execute(delete(Permission).where(Permission.permission_id.in_([seed.permission_id, seed.finalize_permission_id])))
+        session.execute(delete(Permission).where(Permission.permission_id.in_([seed.permission_id, seed.finalize_permission_id, seed.payslip_permission_id])))
         session.execute(delete(Role).where(Role.role_id == seed.role_id))
         session.execute(delete(User).where(User.user_id == seed.user_id))
 
@@ -681,14 +830,21 @@ def _delete_owned_audit_events(
     audit_event_model,
     audit_event_change_model,
     payroll_run_id: int,
+    payslip_ids: list[int] | None = None,
 ) -> list[int]:
     """Delete this fixture run's audit rows without a MySQL self-select DELETE."""
+    conditions = [
+        (audit_event_model.resource_type == "PAYROLL_RUN")
+        & (audit_event_model.resource_id == payroll_run_id)
+    ]
+    if payslip_ids:
+        conditions.append(
+            (audit_event_model.resource_type == "PAYSLIP")
+            & audit_event_model.resource_id.in_(payslip_ids)
+        )
     audit_ids = list(
         session.scalars(
-            select(audit_event_model.audit_event_id).where(
-                audit_event_model.resource_type == "PAYROLL_RUN",
-                audit_event_model.resource_id == payroll_run_id,
-            )
+            select(audit_event_model.audit_event_id).where(*conditions)
         ).all()
     )
     if audit_ids:

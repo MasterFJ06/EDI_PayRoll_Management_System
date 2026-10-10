@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 
 from app.api.dependencies.authorization import require_permission
 from app.api.dependencies.unit_of_work import get_unit_of_work
-from app.api.schemas.payroll import PayrollRunCreateBody
+from app.api.schemas.payroll import PayrollRunCreateBody, PayslipCreateBody
 from app.application.common.unit_of_work import UnitOfWork
 from app.application.payroll.payroll_run_service import PayrollRunService
 from app.application.payroll.payroll_processing_orchestrator import (
@@ -14,7 +14,13 @@ from app.application.payroll.payroll_run_retry_service import PayrollRunRetrySer
 from app.application.payroll.payroll_run_finalization_service import (
     PayrollRunFinalizationService,
 )
-from app.application.payroll.schemas import PayrollRunCreateRequest, PayrollRunResponse
+from app.application.payroll.schemas import (
+    PayslipCreateRequest,
+    PayslipResponse,
+    PayrollRunCreateRequest,
+    PayrollRunResponse,
+)
+from app.application.payroll.payslip_service import PayslipService
 from app.infrastructure.persistence.models.user import User
 
 
@@ -142,5 +148,37 @@ def finalize_payroll_run(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Payroll Run not found.",
+        )
+    return response
+
+
+@router.post(
+    "/runs/{run_id}/results/{result_id}/payslip",
+    response_model=PayslipResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def generate_payslip(
+    run_id: Annotated[int, Path(gt=0)],
+    result_id: Annotated[int, Path(gt=0)],
+    request_body: PayslipCreateBody,
+    request: Request,
+    current_user: Annotated[
+        User, Depends(require_permission("payroll.payslip.create"))
+    ],
+    uow: Annotated[UnitOfWork, Depends(get_unit_of_work)],
+) -> PayslipResponse:
+    response = PayslipService(uow).generate(
+        PayslipCreateRequest(
+            payroll_run_id=run_id,
+            payroll_result_id=result_id,
+            payslip_number=request_body.payslip_number,
+        ),
+        current_user.user_id,
+        getattr(request.state, "request_id", None),
+    )
+    if response is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Payroll Run or Payroll Result not found.",
         )
     return response

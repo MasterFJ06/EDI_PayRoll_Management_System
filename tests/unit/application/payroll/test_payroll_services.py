@@ -14,6 +14,7 @@ from app.application.payroll.payroll_result_component_service import (
 from app.application.payroll.payroll_result_service import PayrollResultService
 from app.application.payroll.payroll_run_service import PayrollRunService
 from app.application.payroll.payslip_service import PayslipService
+from app.application.payroll.payslip_service import _is_payslip_unique_conflict
 from app.application.payroll.schemas import (
     PayrollProcessingIssueCreateRequest,
     PayrollResultComponentCreateRequest,
@@ -22,6 +23,7 @@ from app.application.payroll.schemas import (
     PayslipCreateRequest,
 )
 from app.domain.shared.exceptions import BusinessRuleViolation
+from sqlalchemy.exc import IntegrityError
 
 
 def _uow() -> SimpleNamespace:
@@ -35,9 +37,13 @@ def _uow() -> SimpleNamespace:
         "payroll_result_components",
         "payroll_processing_issues",
         "payslips",
+        "audit_events",
     )
     repos = {name: MagicMock() for name in repository_names}
     repos["payroll_runs"].lock_active_attempt.return_value = object()
+    repos["payroll_runs"].lock_for_finalization.return_value = SimpleNamespace(
+        payroll_run_id=1, status="FINALIZED"
+    )
     for repo in repos.values():
         repo.get_by_id.return_value = object()
         repo.get_by_period.return_value = None
@@ -45,17 +51,24 @@ def _uow() -> SimpleNamespace:
         repo.get_by_result_and_component.return_value = None
         repo.get_by_result_id.return_value = None
         repo.get_by_number.return_value = None
-        repo.add.side_effect = lambda model: setattr(model, {
-            "PayrollRunModel": "payroll_run_id",
-            "PayrollResultModel": "payroll_result_id",
-            "PayrollResultComponentModel": "payroll_result_component_id",
-            "PayrollProcessingIssueModel": "payroll_issue_id",
-            "PayslipModel": "payslip_id",
-        }[type(model).__name__], 9)
+        def add_model(model):
+            setattr(model, {
+                "PayrollRunModel": "payroll_run_id",
+                "PayrollResultModel": "payroll_result_id",
+                "PayrollResultComponentModel": "payroll_result_component_id",
+                "PayrollProcessingIssueModel": "payroll_issue_id",
+                "PayslipModel": "payslip_id",
+            }[type(model).__name__], 9)
+            if type(model).__name__ == "PayslipModel":
+                model.generated_at = datetime(2026, 10, 10, 12, 0, 0)
+            return model
+
+        repo.add.side_effect = add_model
+    repos["audit_events"].add.side_effect = None
     result = SimpleNamespace(payroll_result_id=1, payroll_run_id=1)
     repos["payroll_results"].get_by_id.return_value = result
     repos["payroll_results"].get_by_id_for_update.return_value = result
-    return SimpleNamespace(**repos, commit=MagicMock())
+    return SimpleNamespace(**repos, commit=MagicMock(), rollback=MagicMock())
 
 
 def test_create_payroll_run_defaults_to_schema_created_status_and_commits() -> None:
@@ -212,41 +225,88 @@ def test_create_processing_issue_validates_references_and_schema_state() -> None
         )
 
 
-def test_create_payslip_checks_references_and_unique_constraints() -> None:
+def test_generate_payslip_uses_finalized_result_and_authenticated_actor() -> None:
     uow = _uow()
-    response = PayslipService(uow).create(
+    response = PayslipService(uow).generate(
         PayslipCreateRequest(
+            payroll_run_id=1,
             payroll_result_id=1,
             payslip_number="PS-1",
-            generated_by_user_id=2,
-            document_path="/documents/ps-1.pdf",
-        )
+        ),
+        actor_user_id=2,
+        correlation_id="request-1",
     )
     assert response.payslip_id == 9
+    assert response.generated_by_user_id == 2
+    assert response.document_path is None
+    assert response.generated_at is not None
+    model = uow.payslips.add.call_args.args[0]
+    assert model.document_path is None
+    event, changes = uow.audit_events.add.call_args.args
+    assert event.action_type == "PAYSLIP_GENERATED"
+    assert event.actor_user_id == 2
+    assert event.correlation_id == "request-1"
+    assert {change.field_name for change in changes} == {
+        "payroll_run_id", "payroll_result_id"
+    }
+    assert all("amount" not in change.field_name for change in changes)
     uow.commit.assert_called_once()
+
+
+@pytest.mark.parametrize("constraint", ["uq_payslip_result", "uq_payslip_number"])
+def test_payslip_duplicate_classifier_is_limited_to_unique_constraints(
+    constraint: str,
+) -> None:
+    duplicate = IntegrityError("INSERT", {}, Exception(f"Duplicate entry for key '{constraint}'"))
+    unrelated = IntegrityError("INSERT", {}, Exception("foreign key constraint fails"))
+    assert _is_payslip_unique_conflict(duplicate)
+    assert not _is_payslip_unique_conflict(unrelated)
 
     uow = _uow()
     uow.payroll_results.get_by_id.return_value = None
-    with pytest.raises(BusinessRuleViolation, match="Payroll result"):
-        PayslipService(uow).create(
+    response = PayslipService(uow).generate(
+        PayslipCreateRequest(
+            payroll_run_id=1, payroll_result_id=1, payslip_number="PS-1"
+        ),
+        actor_user_id=2,
+        correlation_id=None,
+    )
+    assert response is None
+    uow.payslips.add.assert_not_called()
+
+    uow = _uow()
+    uow.payroll_runs.lock_for_finalization.return_value.status = "PROCESSED"
+    with pytest.raises(BusinessRuleViolation, match="FINALIZED"):
+        PayslipService(uow).generate(
             PayslipCreateRequest(
-                payroll_result_id=1,
-                payslip_number="PS-1",
-                generated_by_user_id=2,
-                document_path="/documents/ps-1.pdf",
-            )
+                payroll_run_id=1, payroll_result_id=1, payslip_number="PS-1"
+            ), actor_user_id=2, correlation_id=None
         )
 
     uow = _uow()
-    uow.users.get_by_id.return_value = None
-    with pytest.raises(BusinessRuleViolation, match="generator user"):
-        PayslipService(uow).create(
+    uow.payroll_results.get_by_id.return_value.payroll_run_id = 99
+    assert PayslipService(uow).generate(
+        PayslipCreateRequest(
+            payroll_run_id=1, payroll_result_id=1, payslip_number="PS-1"
+        ), actor_user_id=2, correlation_id=None
+    ) is None
+
+    uow = _uow()
+    uow.payslips.get_by_result_id.return_value = object()
+    with pytest.raises(BusinessRuleViolation, match="already exists"):
+        PayslipService(uow).generate(
             PayslipCreateRequest(
-                payroll_result_id=1,
-                payslip_number="PS-1",
-                generated_by_user_id=2,
-                document_path="/documents/ps-1.pdf",
-            )
+                payroll_run_id=1, payroll_result_id=1, payslip_number="PS-1"
+            ), actor_user_id=2, correlation_id=None
+        )
+
+    uow = _uow()
+    uow.payslips.get_by_number.return_value = object()
+    with pytest.raises(BusinessRuleViolation, match="number already exists"):
+        PayslipService(uow).generate(
+            PayslipCreateRequest(
+                payroll_run_id=1, payroll_result_id=1, payslip_number="PS-1"
+            ), actor_user_id=2, correlation_id=None
         )
 
 
@@ -261,29 +321,4 @@ def test_create_processing_issue_rejects_inactive_attempt() -> None:
             attempt_number=1,
         )
     uow.payroll_processing_issues.add.assert_not_called()
-    uow.commit.assert_not_called()
-
-    uow = _uow()
-    uow.payslips.get_by_result_id.return_value = object()
-    with pytest.raises(BusinessRuleViolation, match="already exists for this payroll result"):
-        PayslipService(uow).create(
-            PayslipCreateRequest(
-                payroll_result_id=1,
-                payslip_number="PS-1",
-                generated_by_user_id=2,
-                document_path="/documents/ps-1.pdf",
-            )
-        )
-
-    uow = _uow()
-    uow.payslips.get_by_number.return_value = object()
-    with pytest.raises(BusinessRuleViolation, match="number already exists"):
-        PayslipService(uow).create(
-            PayslipCreateRequest(
-                payroll_result_id=1,
-                payslip_number="PS-1",
-                generated_by_user_id=2,
-                document_path="/documents/ps-1.pdf",
-            )
-        )
     uow.commit.assert_not_called()

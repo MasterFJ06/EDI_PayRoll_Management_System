@@ -51,4 +51,5 @@ class PayslipRepository(PayslipRepositoryContract):
     def add(self, payslip: PayslipModel) -> PayslipModel:
         self.session.add(payslip)
         self.session.flush()
+        self.session.refresh(payslip)
         return payslip

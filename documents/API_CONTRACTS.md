@@ -418,6 +418,46 @@ invariant returns HTTP 409. Concurrent or repeated requests are serialized by
 the parent-row lock and conditional state transition: exactly one request may
 succeed, and competing or subsequent requests receive HTTP 409.
 
+### Phase 2B-8A — Individual Payslip Record Generation
+
+`POST /api/v1/payroll/runs/{run_id}/results/{result_id}/payslip` creates one
+Payslip database record for a Payroll Result. It requires an active authenticated
+user with the persisted `payroll.payslip.create` permission. The authenticated
+user is recorded as `generated_by_user_id`; clients cannot supply the generator
+identity. The request body contains only `payslip_number`, which is required by
+the existing schema. A dedicated Payslip response contains `payslip_id`,
+`payroll_result_id`, `payslip_number`, `generated_by_user_id`, `generated_at`,
+and nullable `document_path` (null because this increment creates no document).
+
+The Payroll Run must be `FINALIZED`, and the specified Payroll Result must belong
+to that run. Generation reads the persisted Payroll Result and Payroll Result
+Components without recalculating financial values or modifying payroll results,
+components, Workforce snapshots, or run state. The result's persisted financial
+values retain Decision 37 precision and rounding. This increment is individual;
+bulk generation, employee self-service, payslip read/download, and PDF/document
+creation are out of scope.
+
+Success returns HTTP 201. Missing runs, missing results, and results that do not
+belong to the specified run return HTTP 404. A non-finalized run and an existing
+payslip for the result return HTTP 409. Database uniqueness on
+`payroll_result_id` and `payslip_number` is authoritative; an expected
+concurrent uniqueness collision also returns HTTP 409. Missing/invalid
+authentication returns HTTP 401, insufficient permission returns HTTP 403, and
+unexpected errors use the centralized sanitized HTTP 500 response.
+
+The operation locks the parent Payroll Run and verifies the current finalized
+state before creating the record. Payslip insertion and `PAYSLIP_GENERATED`
+audit insertion use the same Unit of Work transaction. The event records the
+authenticated actor, payslip resource identifier, run/result identifiers, and
+request correlation ID when available; it must not record salary amounts.
+Failure rolls back both writes.
+
+The `payslips.document_path` column is nullable for record-only payslips. A null
+value means no document has been generated; an empty, fabricated, or placeholder
+path is prohibited. The `payroll.payslip.create` permission is included in the
+seed catalog and Payroll Administrator role assignment. No employee
+self-service or document-storage contract is established here.
+
 ---
 
 # Authentication
@@ -444,10 +484,12 @@ provide the user identity, role, or permission used for the decision.
 
 The development seed catalog includes the `Payroll Administrator` role and granular
 permissions `payroll.run.create`, `payroll.run.read`, `payroll.run.process`,
-`payroll.run.retry`, and `payroll.run.finalize`. No user is assigned to the role by the
-seed data. Implemented Payroll Run operations are documented in the Phase 2A,
-Phase 2B-1, retry, and finalization sections above. Payslip operations remain
-unimplemented.
+`payroll.run.retry`, `payroll.run.finalize`, and `payroll.payslip.create`. No
+user is assigned to the role by the seed data. Implemented
+Payroll Run operations are documented in the Phase 2A, Phase 2B-1, retry, and
+finalization sections above. Individual payslip record generation is
+implemented without document generation; payslip read/download operations
+remain unimplemented.
 
 ---
 

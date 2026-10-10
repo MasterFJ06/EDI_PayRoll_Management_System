@@ -100,8 +100,8 @@ def test_payroll_issue_enforces_status_resolution_check() -> None:
 
 
 def test_payslip_accepts_schema_fields_and_requires_positive_references() -> None:
-    payslip = Payslip(None, 1, "", 2, "")
+    payslip = Payslip(None, 1, "", 2, None)
     assert payslip.payroll_result_id == 1
-    assert payslip.document_path == ""
+    assert payslip.document_path is None
     with pytest.raises(BusinessRuleViolation):
         Payslip(None, 0, "P-1", 2, "/payslip.pdf")

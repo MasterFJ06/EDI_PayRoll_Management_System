@@ -80,10 +80,9 @@ class PayrollProcessingIssueResponse(BaseModel):
 
 
 class PayslipCreateRequest(BaseModel):
+    payroll_run_id: int = Field(gt=0)
     payroll_result_id: int = Field(gt=0)
     payslip_number: str = Field(max_length=50)
-    generated_by_user_id: int = Field(gt=0)
-    document_path: str = Field(max_length=500)
 
 
 class PayslipResponse(BaseModel):
@@ -91,4 +90,5 @@ class PayslipResponse(BaseModel):
     payroll_result_id: int
     payslip_number: str
     generated_by_user_id: int
-    document_path: str
+    generated_at: datetime
+    document_path: str | None

@@ -27,6 +27,12 @@ _EXPECTED_LIVE_TESTS = {
     "test_repeated_finalization_returns_conflict",
     "test_concurrent_finalization_has_one_winner",
     "test_finalization_and_audit_roll_back_together_on_audit_failure",
+    "test_generates_finalized_payslip_and_audit_atomically",
+    "test_payslip_generation_requires_finalized_run",
+    "test_duplicate_payslip_generation_returns_conflict",
+    "test_concurrent_payslip_generation_has_one_winner",
+    "test_payslip_and_audit_roll_back_together_on_audit_failure",
+    "test_payslip_generation_preserves_finalized_financial_data",
 }
 
 
@@ -54,7 +60,7 @@ def pytest_collection_finish(session: pytest.Session) -> None:
         missing = sorted(_EXPECTED_LIVE_TESTS - collected)
         unexpected = sorted(collected - _EXPECTED_LIVE_TESTS)
         raise pytest.UsageError(
-            f"Strict MySQL run must collect exactly ten live tests; missing={missing}, unexpected={unexpected}."
+            f"Strict MySQL run must collect exactly sixteen live tests; missing={missing}, unexpected={unexpected}."
         )
 
 
@@ -64,7 +70,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     reporter = session.config.pluginmanager.get_plugin("terminalreporter")
     passed = len(reporter.stats.get("passed", [])) if reporter else 0
     skipped = len(reporter.stats.get("skipped", [])) if reporter else 0
-    if exitstatus != pytest.ExitCode.OK or passed != 10 or skipped != 0:
+    if exitstatus != pytest.ExitCode.OK or passed != 16 or skipped != 0:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
