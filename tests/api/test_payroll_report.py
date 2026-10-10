@@ -104,9 +104,12 @@ def test_report_returns_only_finalized_summary_and_decimal_totals(
     assert report_uow.permission_checks == [(12, "report.payroll.read")]
 
 
-def test_report_missing_run_returns_404(client: TestClient) -> None:
+def test_report_missing_run_returns_404(
+    client: TestClient, report_uow: ReportUnitOfWork
+) -> None:
     response = client.get("/api/v1/reports/payroll/runs/999", headers=_headers())
     assert response.status_code == 404
+    assert report_uow.permission_checks == [(12, "report.payroll.read")]
 
 
 @pytest.mark.parametrize("state", ["CREATED", "PROCESSING", "PROCESSED", "FAILED"])
