@@ -256,6 +256,64 @@ def test_default_comparison_preserves_non_equivalent_defaults(
     assert "sample.name.default_sql mismatch" in str(error)
 
 
+@pytest.mark.parametrize(
+    ("table_name", "expected_column", "actual_column"),
+    [
+        ("leave_balances", "allocated_days DECIMAL(6,2) NOT NULL DEFAULT 0.00", "allocated_days DECIMAL(6,2) NOT NULL DEFAULT '0.00'"),
+        ("leave_balances", "used_days DECIMAL(6,2) NOT NULL DEFAULT 0.00", "used_days DECIMAL(6,2) NOT NULL DEFAULT '0.00'"),
+        ("payroll_runs", "attempt_number BIGINT UNSIGNED NOT NULL DEFAULT 0", "attempt_number BIGINT UNSIGNED NOT NULL DEFAULT '0'"),
+        ("leave_types", "is_active BOOLEAN NOT NULL DEFAULT TRUE", "is_active TINYINT ( 1 ) NOT NULL DEFAULT '1'"),
+        ("roles", "is_active BOOLEAN NOT NULL DEFAULT TRUE", "is_active TINYINT ( 1 ) NOT NULL DEFAULT '1'"),
+        ("salary_revision_components", "is_overtime_base BOOLEAN NOT NULL DEFAULT FALSE", "is_overtime_base TINYINT ( 1 ) NOT NULL DEFAULT '0'"),
+    ],
+)
+def test_numeric_defaults_accept_equivalent_mysql_reflection_values(
+    table_name: str, expected_column: str, actual_column: str
+) -> None:
+    expected = _parse_columns_and_constraints(expected_column, "InnoDB")
+    actual = _parse_columns_and_constraints(actual_column, "InnoDB")
+    assert _schema_differences(expected, actual, table_name) == []
+
+
+@pytest.mark.parametrize(
+    ("actual_column", "expected_attribute"),
+    [
+        ("allocated_days DECIMAL(6,2) NOT NULL DEFAULT '0.01'", "default_sql"),
+        ("allocated_days DECIMAL(6,2) NOT NULL DEFAULT 'unknown'", "default_sql"),
+        ("allocated_days VARCHAR(10) NOT NULL DEFAULT '0.00'", "type_sql"),
+    ],
+)
+def test_numeric_default_normalization_keeps_different_values_and_types(
+    actual_column: str, expected_attribute: str
+) -> None:
+    expected = _parse_columns_and_constraints(
+        "allocated_days DECIMAL(6,2) NOT NULL DEFAULT 0.00", "InnoDB"
+    )
+    actual = _parse_columns_and_constraints(actual_column, "InnoDB")
+    assert any(
+        f".{expected_attribute}" in difference
+        for difference in _schema_differences(expected, actual, "sample")
+    )
+
+
+def test_type_normalization_removes_spacing_but_preserves_modifiers() -> None:
+    expected = _parse_columns_and_constraints(
+        "value TINYINT(1) NOT NULL DEFAULT 1", "InnoDB"
+    )
+    formatted = _parse_columns_and_constraints(
+        "value TINYINT ( 1 ) NOT NULL DEFAULT 1", "InnoDB"
+    )
+    different_length = _parse_columns_and_constraints(
+        "value TINYINT(2) NOT NULL DEFAULT 1", "InnoDB"
+    )
+    different_modifier = _parse_columns_and_constraints(
+        "value TINYINT(1) UNSIGNED NOT NULL DEFAULT 1", "InnoDB"
+    )
+    assert _schema_differences(expected, formatted, "sample") == []
+    assert any("type_sql mismatch" in error for error in _schema_differences(expected, different_length, "sample"))
+    assert any("type_sql mismatch" in error for error in _schema_differences(expected, different_modifier, "sample"))
+
+
 def test_schema_verification_error_preserves_exact_column_and_check_details() -> None:
     expected = _valid_definition()
     actual_columns = dict(expected.columns)
@@ -289,3 +347,17 @@ def test_current_snapshot_parser_captures_full_payroll_schema_definitions() -> N
     assert {item.columns for item in schema["users"].unique_constraints} == {("username",), ("email",)}
     assert schema["employees"].foreign_keys
     assert schema["users"].checks
+    assert schema["leave_balances"].columns["allocated_days"] == ColumnDefinition(
+        "allocated_days", "decimal(6,2)", False, "0.00", False
+    )
+    assert schema["leave_balances"].columns["used_days"].default_sql == "0.00"
+    assert schema["leave_types"].columns["is_active"] == ColumnDefinition(
+        "is_active", "tinyint(1)", False, "1", False
+    )
+    assert schema["roles"].columns["is_active"] == schema["leave_types"].columns["is_active"]
+    assert schema["payroll_runs"].columns["attempt_number"] == ColumnDefinition(
+        "attempt_number", "bigint unsigned", False, "0", False
+    )
+    assert schema["salary_revision_components"].columns["is_overtime_base"] == ColumnDefinition(
+        "is_overtime_base", "tinyint(1)", False, "0", False
+    )

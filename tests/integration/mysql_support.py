@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Mapping
 
@@ -139,6 +140,56 @@ def _normalize_sql(value: str | None) -> str | None:
     if value is None:
         return None
     return " ".join(_sql_tokens(value))
+
+
+def _normalize_type_sql(value: str) -> str:
+    """Normalize type punctuation spacing without changing type modifiers."""
+    normalized = _normalize_sql(value) or ""
+    normalized = re.sub(r"\s*\(\s*", "(", normalized)
+    normalized = re.sub(r"\s*\)", ")", normalized)
+    return re.sub(r"\s*,\s*", ",", normalized)
+
+
+_NUMERIC_TYPE_RE = re.compile(
+    r"^(?:tinyint|smallint|mediumint|int|integer|bigint|decimal|numeric|float|double|real)"
+    r"(?:\s|\(|$)"
+)
+_NUMERIC_LITERAL_RE = re.compile(
+    r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$"
+)
+
+
+def _numeric_default(column: ColumnDefinition, value: str | None) -> Decimal | None:
+    """Parse a numeric default only for a numeric SQL column."""
+    if value is None or not _NUMERIC_TYPE_RE.match(column.type_sql):
+        return None
+    candidate = value
+    if (
+        len(candidate) >= 2
+        and candidate[0] == candidate[-1]
+        and candidate[0] in "'\""
+    ):
+        candidate = candidate[1:-1]
+    if not _NUMERIC_LITERAL_RE.fullmatch(candidate):
+        return None
+    try:
+        return Decimal(candidate)
+    except InvalidOperation:
+        return None
+
+
+def _numeric_defaults_equivalent(
+    expected_column: ColumnDefinition, actual_column: ColumnDefinition
+) -> bool:
+    if expected_column.type_sql != actual_column.type_sql:
+        return False
+    expected_value = _numeric_default(expected_column, expected_column.default_sql)
+    actual_value = _numeric_default(actual_column, actual_column.default_sql)
+    return (
+        expected_value is not None
+        and actual_value is not None
+        and expected_value == actual_value
+    )
 
 
 def _sql_tokens(value: str) -> tuple[str, ...]:
@@ -329,7 +380,7 @@ def _parse_columns_and_constraints(body: str, engine: str) -> TableDefinition:
             raise ValueError(f"Unsupported schema clause: {stripped[:80]}")
         name, declaration = col.group(1), col.group(2).strip()
         default = re.search(r"(?i)\bDEFAULT\s+((?:CURRENT_TIMESTAMP(?:\(\d+\))?)|(?:'[^']*')|(?:\"[^\"]*\")|(?:TRUE|FALSE)|(?:NULL)|(?:[-+]?\d+(?:\.\d+)?))", declaration)
-        type_sql = _normalize_sql(re.split(r"\s+(?:NOT\s+NULL|NULL|DEFAULT|AUTO_INCREMENT|GENERATED|AS)\b", declaration, maxsplit=1, flags=re.I)[0]) or ""
+        type_sql = _normalize_type_sql(re.split(r"\s+(?:NOT\s+NULL|NULL|DEFAULT|AUTO_INCREMENT|GENERATED|AS)\b", declaration, maxsplit=1, flags=re.I)[0])
         if type_sql == "boolean":
             type_sql = "tinyint(1)"
         default_sql = _normalize_sql(default.group(1)) if default else None
@@ -394,7 +445,7 @@ def _actual_table(inspector, table: str) -> TableDefinition:
             type_sql += " unsigned"
         computed = item.get("computed")
         columns[item["name"]] = ColumnDefinition(
-            item["name"], _normalize_sql(type_sql) or "", bool(item.get("nullable", True)),
+            item["name"], _normalize_type_sql(type_sql), bool(item.get("nullable", True)),
             _normalize_sql(str(item.get("default"))) if item.get("default") is not None else None,
             bool(computed),
         )
@@ -431,6 +482,11 @@ def _schema_differences(expected: TableDefinition, actual: TableDefinition, tabl
                 and expected_column.nullable
                 and actual_column.nullable
                 and {expected_value, actual_value} == {None, "null"}
+            ):
+                continue
+            if (
+                attribute == "default_sql"
+                and _numeric_defaults_equivalent(expected_column, actual_column)
             ):
                 continue
             if expected_value != actual_value:
