@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 
@@ -39,6 +39,10 @@ class MySQLTestConfigurationError(ValueError):
     pass
 
 
+class SchemaVerificationError(ValueError):
+    """A prepared-snapshot definition does not match MySQL metadata."""
+
+
 @dataclass(frozen=True)
 class MySQLTestTarget:
     url: URL
@@ -63,12 +67,26 @@ class ForeignKeyDefinition:
     referred_columns: tuple[str, ...]
     ondelete: str | None
     onupdate: str | None
+    name: str | None = field(default=None, compare=False)
+
+
+@dataclass(frozen=True)
+class UniqueDefinition:
+    columns: tuple[str, ...]
+    name: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
 class IndexDefinition:
     columns: tuple[str, ...]
     unique: bool
+    name: str | None = field(default=None, compare=False)
+
+
+@dataclass(frozen=True)
+class CheckDefinition:
+    name: str | None
+    expression: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -77,9 +95,9 @@ class TableDefinition:
     columns: Mapping[str, ColumnDefinition]
     primary_key: tuple[str, ...]
     foreign_keys: frozenset[ForeignKeyDefinition]
-    unique_constraints: frozenset[tuple[str, ...]]
+    unique_constraints: frozenset[UniqueDefinition]
     indexes: frozenset[IndexDefinition]
-    checks: frozenset[str]
+    checks: frozenset[CheckDefinition]
 
 
 def parse_mysql_test_url(value: str | None) -> MySQLTestTarget:
@@ -120,22 +138,75 @@ def mysql_test_url_from_environment(environ: Mapping[str, str] | None = None) ->
 def _normalize_sql(value: str | None) -> str | None:
     if value is None:
         return None
-    normalized = re.sub(r"\s+", " ", value.strip().replace("`", "")).casefold()
-    while normalized.startswith("(") and normalized.endswith(")"):
+    return " ".join(_sql_tokens(value))
+
+
+def _sql_tokens(value: str) -> tuple[str, ...]:
+    """Normalize SQL identifiers and spacing while preserving literal values."""
+    tokens: list[str] = []
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char.isspace():
+            index += 1
+        elif char == "`":
+            end = value.find("`", index + 1)
+            if end < 0:
+                tokens.append(value[index:].casefold())
+                break
+            tokens.append(value[index + 1:end].casefold())
+            index = end + 1
+        elif char in "'\"":
+            quote = char
+            end = index + 1
+            literal = [char]
+            while end < len(value):
+                current = value[end]
+                literal.append(current)
+                if current == "\\" and end + 1 < len(value):
+                    end += 1
+                    literal.append(value[end])
+                elif current == quote:
+                    if end + 1 < len(value) and value[end + 1] == quote:
+                        end += 1
+                        literal.append(value[end])
+                    else:
+                        end += 1
+                        break
+                end += 1
+            tokens.append("".join(literal))
+            index = end
+        elif char.isalnum() or char in "_$":
+            end = index + 1
+            while end < len(value) and (value[end].isalnum() or value[end] in "_$."):
+                end += 1
+            tokens.append(value[index:end].casefold())
+            index = end
+        else:
+            pair = value[index:index + 2]
+            if pair in {"<=", ">=", "<>", "!="}:
+                tokens.append(pair)
+                index += 2
+            else:
+                tokens.append(char)
+                index += 1
+
+    # Remove only full-expression wrapping parentheses, not internal grouping.
+    while len(tokens) >= 2 and tokens[0] == "(" and tokens[-1] == ")":
         depth = 0
-        balanced_outer = True
-        for index, char in enumerate(normalized):
-            if char == "(":
+        wraps_all = True
+        for token_index, token in enumerate(tokens):
+            if token == "(":
                 depth += 1
-            elif char == ")":
+            elif token == ")":
                 depth -= 1
-                if depth == 0 and index != len(normalized) - 1:
-                    balanced_outer = False
+                if depth == 0 and token_index != len(tokens) - 1:
+                    wraps_all = False
                     break
-        if not balanced_outer or depth != 0:
+        if not wraps_all or depth != 0:
             break
-        normalized = normalized[1:-1].strip()
-    return normalized
+        tokens = tokens[1:-1]
+    return tuple(tokens)
 
 
 def _split_items(body: str) -> list[str]:
@@ -167,13 +238,14 @@ def _parse_columns_and_constraints(body: str, engine: str) -> TableDefinition:
     columns: dict[str, ColumnDefinition] = {}
     pk: tuple[str, ...] = ()
     fks: set[ForeignKeyDefinition] = set()
-    uniques: set[tuple[str, ...]] = set()
+    uniques: set[UniqueDefinition] = set()
     indexes: set[IndexDefinition] = set()
-    checks: set[str] = set()
+    checks: set[CheckDefinition] = set()
     for item in _split_items(body):
         stripped = item.strip()
-        match = re.match(r"(?is)^CONSTRAINT\s+`?\w+`?\s+(.*)$", stripped)
-        constraint = match.group(1) if match else stripped
+        match = re.match(r"(?is)^CONSTRAINT\s+`?(\w+)`?\s+(.*)$", stripped)
+        constraint_name = match.group(1) if match else None
+        constraint = match.group(2) if match else stripped
         primary = re.match(r"(?is)^PRIMARY\s+KEY\s*\((.*?)\)$", constraint)
         if primary:
             pk = tuple(re.findall(r"`?(\w+)`?", primary.group(1)))
@@ -186,19 +258,20 @@ def _parse_columns_and_constraints(body: str, engine: str) -> TableDefinition:
                 tuple(re.findall(r"`?(\w+)`?", fk.group(3))),
                 (re.search(r"(?i)ON\s+DELETE\s+(CASCADE|RESTRICT|SET\s+NULL|NO\s+ACTION)", actions).group(1).upper() if re.search(r"(?i)ON\s+DELETE\s+(CASCADE|RESTRICT|SET\s+NULL|NO\s+ACTION)", actions) else None),
                 (re.search(r"(?i)ON\s+UPDATE\s+(CASCADE|RESTRICT|SET\s+NULL|NO\s+ACTION)", actions).group(1).upper() if re.search(r"(?i)ON\s+UPDATE\s+(CASCADE|RESTRICT|SET\s+NULL|NO\s+ACTION)", actions) else None),
+                constraint_name,
             ))
             continue
-        unique = re.match(r"(?is)^(?:UNIQUE(?:\s+KEY|\s+INDEX)?\s+(?:`?\w+`?\s*)?)\((.*?)\)$", constraint)
+        unique = re.match(r"(?is)^UNIQUE(?:\s+(?:KEY|INDEX))?(?:\s+`?(\w+)`?)?\s*\((.*?)\)$", constraint)
         if unique:
-            uniques.add(tuple(re.findall(r"`?(\w+)`?", unique.group(1))))
+            uniques.add(UniqueDefinition(tuple(re.findall(r"`?(\w+)`?", unique.group(2))), unique.group(1) or constraint_name))
             continue
-        index = re.match(r"(?is)^(?:KEY|INDEX)\s+`?\w+`?\s*\((.*?)\)$", constraint)
+        index = re.match(r"(?is)^(?:KEY|INDEX)\s+`?(\w+)`?\s*\((.*?)\)$", constraint)
         if index:
-            indexes.add(IndexDefinition(tuple(re.findall(r"`?(\w+)`?", index.group(1))), False))
+            indexes.add(IndexDefinition(tuple(re.findall(r"`?(\w+)`?", index.group(2))), False, index.group(1)))
             continue
         check = re.match(r"(?is)^CHECK\s*\((.*)\)$", constraint)
         if check:
-            checks.add(_normalize_sql(check.group(1)) or "")
+            checks.add(CheckDefinition(constraint_name, _sql_tokens(check.group(1))))
             continue
         col = re.match(r"(?is)^`?(\w+)`?\s+(.+)$", stripped)
         if not col:
@@ -279,9 +352,12 @@ def _actual_table(inspector, table: str) -> TableDefinition:
     for item in inspector.get_foreign_keys(table):
         options = item.get("options") or {}
         fks.add(ForeignKeyDefinition(tuple(item.get("constrained_columns") or ()), item.get("referred_table") or "", tuple(item.get("referred_columns") or ()), (options.get("ondelete") or "").upper() or None, (options.get("onupdate") or "").upper() or None))
-    uniques = {tuple(item.get("column_names") or ()) for item in inspector.get_unique_constraints(table)}
-    indexes = {IndexDefinition(tuple(item.get("column_names") or ()), bool(item.get("unique"))) for item in inspector.get_indexes(table)}
-    checks = {_normalize_sql(item.get("sqltext")) or "" for item in inspector.get_check_constraints(table)}
+    uniques = {UniqueDefinition(tuple(item.get("column_names") or ()), item.get("name")) for item in inspector.get_unique_constraints(table)}
+    indexes = {IndexDefinition(tuple(item.get("column_names") or ()), bool(item.get("unique")), item.get("name")) for item in inspector.get_indexes(table)}
+    checks = {
+        CheckDefinition(item.get("name"), _sql_tokens(item.get("sqltext") or ""))
+        for item in inspector.get_check_constraints(table)
+    }
     engine_name = (inspector.get_table_options(table).get("mysql_engine") or "").casefold()
     return TableDefinition(engine_name, columns, pk, frozenset(fks), frozenset(uniques), frozenset(indexes), frozenset(checks))
 
@@ -289,32 +365,60 @@ def _actual_table(inspector, table: str) -> TableDefinition:
 def _schema_differences(expected: TableDefinition, actual: TableDefinition, table: str = "table") -> list[str]:
     errors: list[str] = []
     if expected.engine.casefold() != actual.engine.casefold():
-        errors.append(f"{table}: engine mismatch")
+        errors.append(f"{table}.engine mismatch: expected {expected.engine!r}; actual {actual.engine!r}")
     if expected.primary_key != actual.primary_key:
-        errors.append(f"{table}: primary-key columns/order mismatch")
+        errors.append(f"{table}.primary_key mismatch: expected {expected.primary_key!r}; actual {actual.primary_key!r}")
     if set(expected.columns) != set(actual.columns):
-        errors.append(f"{table}: column names mismatch")
+        errors.append(f"{table}.columns mismatch: expected {sorted(expected.columns)!r}; actual {sorted(actual.columns)!r}")
     for name in set(expected.columns) & set(actual.columns):
-        if expected.columns[name] != actual.columns[name]:
-            errors.append(f"{table}.{name}: column definition mismatch")
+        expected_column, actual_column = expected.columns[name], actual.columns[name]
+        for attribute in ("type_sql", "nullable", "default_sql", "generated", "on_update_sql", "auto_increment"):
+            expected_value = getattr(expected_column, attribute)
+            actual_value = getattr(actual_column, attribute)
+            if expected_value != actual_value:
+                errors.append(
+                    f"{table}.{name}.{attribute} mismatch: expected {expected_value!r}; actual {actual_value!r}"
+                )
     if expected.foreign_keys != actual.foreign_keys:
-        errors.append(f"{table}: foreign-key definition mismatch")
+        for foreign_key in sorted(expected.foreign_keys - actual.foreign_keys, key=repr):
+            errors.append(f"{table}.foreign_key expected but absent: {foreign_key!r}")
+        for foreign_key in sorted(actual.foreign_keys - expected.foreign_keys, key=repr):
+            errors.append(f"{table}.foreign_key unexpected: {foreign_key!r}")
     if expected.unique_constraints != actual.unique_constraints:
-        errors.append(f"{table}: unique-constraint definition mismatch")
+        errors.append(
+            f"{table}.unique_constraints mismatch: expected {sorted(expected.unique_constraints, key=repr)!r}; "
+            f"actual {sorted(actual.unique_constraints, key=repr)!r}"
+        )
     # MySQL may expose a unique key as both a constraint and an index.
-    expected_ix = expected.indexes | {IndexDefinition(cols, True) for cols in expected.unique_constraints}
+    expected_ix = expected.indexes | {IndexDefinition(unique.columns, True, unique.name) for unique in expected.unique_constraints}
     for foreign_key in expected.foreign_keys:
         columns = foreign_key.columns
         if not any(
             existing[: len(columns)] == columns
-            for existing in [expected.primary_key, *expected.unique_constraints, *(ix.columns for ix in expected.indexes)]
+            for existing in [expected.primary_key, *(unique.columns for unique in expected.unique_constraints), *(ix.columns for ix in expected.indexes)]
         ):
             expected_ix |= {IndexDefinition(columns, False)}
-    actual_ix = actual.indexes | {IndexDefinition(cols, True) for cols in actual.unique_constraints}
+    actual_ix = actual.indexes | {IndexDefinition(unique.columns, True, unique.name) for unique in actual.unique_constraints}
     if expected_ix != actual_ix:
-        errors.append(f"{table}: index definition mismatch")
-    if expected.checks != actual.checks:
-        errors.append(f"{table}: check-constraint expression mismatch")
+        errors.append(
+            f"{table}.indexes mismatch: expected {sorted(expected_ix, key=repr)!r}; "
+            f"actual {sorted(actual_ix, key=repr)!r}"
+        )
+    expected_checks = {check.expression for check in expected.checks}
+    actual_checks = {check.expression for check in actual.checks}
+    if expected_checks != actual_checks:
+        for check in sorted(expected.checks, key=repr):
+            if check.expression not in actual_checks:
+                errors.append(
+                    f"{table}.check {check.name or '<unnamed>'!r} expected expression "
+                    f"{check.expression!r}; no equivalent actual expression"
+                )
+        for check in sorted(actual.checks, key=repr):
+            if check.expression not in expected_checks:
+                errors.append(
+                    f"{table}.check {check.name or '<unnamed>'!r} unexpected expression "
+                    f"{check.expression!r}"
+                )
     return errors
 
 
@@ -323,23 +427,28 @@ def _verify_schema_state(connection, prepared_schema: Path) -> None:
     inspector = inspect(connection)
     actual_tables = set(inspector.get_table_names())
     if "alembic_version" in actual_tables:
-        raise ValueError("Alembic-managed tables are not allowed in the snapshot test database.")
+        raise SchemaVerificationError("Alembic-managed tables are not allowed in the snapshot test database.")
     if actual_tables != set(expected):
-        raise ValueError("MySQL tables do not match the prepared schema snapshot.")
+        raise SchemaVerificationError(f"MySQL table set mismatch: expected {sorted(expected)!r}; actual {sorted(actual_tables)!r}")
     if not _REQUIRED_PATH_TABLES.issubset(actual_tables):
-        raise ValueError("Prepared snapshot is missing a required payroll-path table.")
+        raise SchemaVerificationError("Prepared snapshot is missing a required payroll-path table.")
     actual_definitions: dict[str, TableDefinition] = {}
     for table in sorted(expected):
         row = connection.execute(text(f"SHOW CREATE TABLE `{table}`")).one()
         matches = list(_TABLE_RE.finditer(row[1]))
         if len(matches) != 1 or matches[0].group(1) != table:
-            raise ValueError(f"Could not parse MySQL SHOW CREATE TABLE output for {table!r}.")
-        actual_definitions[table] = _parse_columns_and_constraints(
-            matches[0].group(2), matches[0].group(3)
-        )
+            raise SchemaVerificationError(f"Could not parse MySQL SHOW CREATE TABLE output for {table!r}.")
+        try:
+            actual_definitions[table] = _parse_columns_and_constraints(
+                matches[0].group(2), matches[0].group(3)
+            )
+        except ValueError as exc:
+            raise SchemaVerificationError(
+                f"Could not parse MySQL SHOW CREATE TABLE definition for {table!r}: {exc}"
+            ) from exc
     differences = [message for table in sorted(expected) for message in _schema_differences(expected[table], actual_definitions[table], table)]
     if differences:
-        raise ValueError("MySQL schema definition mismatch: " + "; ".join(differences[:20]))
+        raise SchemaVerificationError("MySQL schema definition mismatch: " + "; ".join(differences[:50]))
     for table in expected:
         if connection.execute(text(f"SELECT 1 FROM `{table}` LIMIT 1")).first() is not None:
-            raise ValueError(f"Test table {table!r} is not empty before seeding.")
+            raise SchemaVerificationError(f"Test table {table!r} is not empty before seeding.")

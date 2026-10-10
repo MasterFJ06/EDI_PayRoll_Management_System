@@ -9,6 +9,7 @@ from sqlalchemy import Engine, create_engine, text
 from scripts.prepare_mysql_test_schema import prepare_schema_snapshot
 from tests.integration.mysql_support import (
     MySQLTestConfigurationError,
+    SchemaVerificationError,
     _SCHEMA_PATH,
     _verify_schema_state,
     mysql_test_url_from_environment,
@@ -91,6 +92,8 @@ def mysql_payroll_database() -> Iterator[tuple[Engine, str]]:
                 if selected_database != target.database_name:
                     pytest.fail("MySQL selected a database other than the test target.", pytrace=False)
                 _verify_schema_state(connection, prepared_schema)
+        except SchemaVerificationError as exc:
+            pytest.fail(str(exc), pytrace=False)
         except pytest.fail.Exception:
             raise
         except Exception as exc:

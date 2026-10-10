@@ -5,12 +5,15 @@ import pytest
 from dataclasses import replace
 
 from tests.integration.mysql_support import (
+    CheckDefinition,
     ColumnDefinition,
     ForeignKeyDefinition,
     IndexDefinition,
     MySQLTestConfigurationError,
     TableDefinition,
+    UniqueDefinition,
     _schema_differences,
+    _parse_columns_and_constraints,
     mysql_test_url_from_environment,
     parse_mysql_test_url,
     parse_schema_snapshot,
@@ -76,17 +79,17 @@ def _valid_definition() -> TableDefinition:
         foreign_keys=frozenset({
             ForeignKeyDefinition(("parent_id",), "parents", ("id",), "CASCADE", "RESTRICT")
         }),
-        unique_constraints=frozenset({("name",)}),
+        unique_constraints=frozenset({UniqueDefinition(("name",), "uq_sample_name")}),
         indexes=frozenset({IndexDefinition(("parent_id",), False)}),
-        checks=frozenset({"id > 0"}),
+        checks=frozenset({CheckDefinition("ck_sample", ("id", ">", "0"))}),
     )
 
 
 @pytest.mark.parametrize(
     "actual, expected_message",
     [
-        ("type_sql", "column definition mismatch"),
-        ("nullable", "column definition mismatch"),
+        ("type_sql", "type_sql mismatch"),
+        ("nullable", "nullable mismatch"),
     ],
 )
 def test_schema_comparison_rejects_column_type_and_nullability_mismatches(
@@ -99,26 +102,72 @@ def test_schema_comparison_rejects_column_type_and_nullability_mismatches(
     )
     difference = _schema_differences(expected, replace(expected, columns=columns), "sample")
     assert any(expected_message in item for item in difference)
+    assert any("expected" in item and "actual" in item for item in difference)
 
 
 def test_schema_comparison_rejects_foreign_key_target_mismatch() -> None:
     expected = _valid_definition()
     fks = {replace(next(iter(expected.foreign_keys)), table="other_parent")}
-    assert any("foreign-key" in item for item in _schema_differences(expected, replace(expected, foreign_keys=frozenset(fks))))
+    errors = _schema_differences(expected, replace(expected, foreign_keys=frozenset(fks)))
+    assert any("parents" in item and "expected but absent" in item for item in errors)
+    assert any("other_parent" in item and "unexpected" in item for item in errors)
 
 
 def test_schema_comparison_rejects_unique_and_index_definition_mismatches() -> None:
     expected = _valid_definition()
-    unique = replace(expected, unique_constraints=frozenset({("parent_id",)}))
+    unique = replace(expected, unique_constraints=frozenset({UniqueDefinition(("parent_id",), "uq_sample_parent")}))
     indexes = replace(expected, indexes=frozenset({IndexDefinition(("name",), False)}))
-    assert any("unique-constraint" in item for item in _schema_differences(expected, unique))
-    assert any("index definition" in item for item in _schema_differences(expected, indexes))
+    assert any("unique_constraints" in item for item in _schema_differences(expected, unique))
+    assert any(".indexes mismatch" in item for item in _schema_differences(expected, indexes))
 
 
 def test_schema_comparison_rejects_check_expression_mismatch() -> None:
     expected = _valid_definition()
-    actual = replace(expected, checks=frozenset({"id >= 0"}))
-    assert any("check-constraint" in item for item in _schema_differences(expected, actual))
+    actual = replace(
+        expected,
+        checks=frozenset({CheckDefinition("mysql_generated_name", ("id", ">=", "0"))}),
+    )
+    errors = _schema_differences(expected, actual, "sample")
+    assert any("sample.check 'ck_sample'" in item and "expected expression" in item for item in errors)
+    assert any("unexpected expression" in item and "id" in item for item in errors)
+
+
+def test_check_metadata_accepts_reliable_layout_and_identifier_quote_changes() -> None:
+    expected = _parse_columns_and_constraints(
+        """id INT NOT NULL,
+        CONSTRAINT ck_state CHECK ((`state` IN ('OPEN', 'CLOSED')))""",
+        "InnoDB",
+    )
+    actual = _parse_columns_and_constraints(
+        """id int not null,
+        CONSTRAINT generated_check_17 CHECK ( state in ( 'OPEN' , 'CLOSED' ) )""",
+        "InnoDB",
+    )
+    assert _schema_differences(expected, actual, "sample") == []
+
+
+def test_check_normalization_does_not_equate_different_operators() -> None:
+    expected = _parse_columns_and_constraints(
+        "id INT NOT NULL, CONSTRAINT ck_positive CHECK (id > 0)", "InnoDB"
+    )
+    actual = _parse_columns_and_constraints(
+        "id INT NOT NULL, CONSTRAINT ck_nonnegative CHECK (id >= 0)", "InnoDB"
+    )
+    errors = _schema_differences(expected, actual, "sample")
+    assert any("id" in item and ">" in item and "no equivalent actual" in item for item in errors)
+    assert any(">=" in item and "unexpected expression" in item for item in errors)
+
+
+def test_column_diagnostics_identify_default_difference() -> None:
+    expected = _valid_definition()
+    columns = dict(expected.columns)
+    columns["name"] = replace(columns["name"], default_sql=None)
+    expected = replace(expected, columns=columns)
+    actual_columns = dict(columns)
+    actual_columns["name"] = replace(actual_columns["name"], default_sql="null")
+    actual = replace(expected, columns=actual_columns)
+    errors = _schema_differences(expected, actual, "sample")
+    assert "sample.name.default_sql mismatch: expected None; actual 'null'" in errors
 
 
 def test_current_snapshot_parser_captures_full_payroll_schema_definitions() -> None:
@@ -127,6 +176,6 @@ def test_current_snapshot_parser_captures_full_payroll_schema_definitions() -> N
     assert schema["users"].columns["user_id"].type_sql == "bigint unsigned"
     assert schema["users"].columns["user_id"].auto_increment
     assert schema["users"].primary_key == ("user_id",)
-    assert schema["users"].unique_constraints == frozenset({("username",), ("email",)})
+    assert {item.columns for item in schema["users"].unique_constraints} == {("username",), ("email",)}
     assert schema["employees"].foreign_keys
     assert schema["users"].checks
