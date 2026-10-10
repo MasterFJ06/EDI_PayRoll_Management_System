@@ -11,6 +11,12 @@ class LeaveRequest(Entity[int | None]):
     REJECTED = "REJECTED"
     CANCELLED = "CANCELLED"
     VALID_STATUSES = {PENDING, APPROVED, REJECTED, CANCELLED}
+    VALID_TRANSITIONS = {
+        PENDING: {APPROVED, REJECTED, CANCELLED},
+        APPROVED: {CANCELLED},
+        REJECTED: set(),
+        CANCELLED: set(),
+    }
 
     def __init__(
         self,
@@ -63,3 +69,12 @@ class LeaveRequest(Entity[int | None]):
         self.reviewed_by_employee_id = reviewed_by_employee_id
         self.reviewed_at = reviewed_at
         self.review_comment = normalized_comment
+
+    @classmethod
+    def ensure_transition(cls, current_status: str, target_status: str) -> None:
+        current = current_status.strip().upper()
+        target = target_status.strip().upper()
+        if target not in cls.VALID_TRANSITIONS.get(current, set()):
+            raise BusinessRuleViolation(
+                f"Leave request cannot transition from {current} to {target}."
+            )

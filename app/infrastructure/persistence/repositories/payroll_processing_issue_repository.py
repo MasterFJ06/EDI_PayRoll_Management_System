@@ -20,6 +20,14 @@ class PayrollProcessingIssueRepository(PayrollProcessingIssueRepositoryContract)
             )
         )
 
+    def list_by_run(self, payroll_run_id: int) -> list[PayrollProcessingIssueModel]:
+        statement = (
+            select(PayrollProcessingIssueModel)
+            .where(PayrollProcessingIssueModel.payroll_run_id == payroll_run_id)
+            .order_by(PayrollProcessingIssueModel.payroll_issue_id)
+        )
+        return list(self.session.scalars(statement).all())
+
     def add(
         self, issue: PayrollProcessingIssueModel
     ) -> PayrollProcessingIssueModel:

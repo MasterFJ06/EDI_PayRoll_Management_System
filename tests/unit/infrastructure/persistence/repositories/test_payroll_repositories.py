@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock
 
 import pytest
+from sqlalchemy.dialects import mysql
 
 from app.infrastructure.persistence.repositories.payroll_processing_issue_repository import (
     PayrollProcessingIssueRepository,
@@ -56,3 +57,29 @@ def test_payroll_repositories_query_using_shared_session() -> None:
         getattr(repository, method)(*arguments)
     assert session.scalar.call_count == len(repos_and_calls)
     session.commit.assert_not_called()
+
+
+def test_payroll_run_attempt_fence_compiles_as_mysql_for_update() -> None:
+    session = MagicMock()
+    session.get_bind.return_value.dialect.name = "mysql"
+    repository = PayrollRunRepository(session)
+    repository.lock_active_attempt(77, 3)
+
+    statement = session.scalar.call_args.args[0]
+    compiled = str(
+        statement.compile(
+            dialect=mysql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    ).upper()
+    assert "FOR UPDATE" in compiled
+    assert "STATUS = 'PROCESSING'" in compiled
+    assert "ATTEMPT_NUMBER = 3" in compiled
+    assert "ATTEMPT_LEASE_EXPIRES_AT > CURRENT_TIMESTAMP(6)" in compiled
+
+    result_session = MagicMock()
+    result_repository = PayrollResultRepository(result_session)
+    result_repository.get_by_id_for_update(9)
+    result_statement = result_session.scalar.call_args.args[0]
+    result_sql = str(result_statement.compile(dialect=mysql.dialect())).upper()
+    assert "FOR UPDATE" in result_sql
+    assert "PAYROLL_RESULT_ID" in result_sql

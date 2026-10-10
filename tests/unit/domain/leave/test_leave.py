@@ -10,11 +10,12 @@ from app.domain.shared.exceptions import BusinessRuleViolation
 
 
 def test_leave_type_construction_normalizes_values() -> None:
-    leave_type = LeaveType(None, " ANNUAL ", " Annual Leave ", " paid leave ")
+    leave_type = LeaveType(None, " ANNUAL ", " Annual Leave ", " paid leave ", "PAID")
 
     assert leave_type.leave_type_code == "ANNUAL"
     assert leave_type.leave_type_name == "Annual Leave"
     assert leave_type.description == "paid leave"
+    assert leave_type.payroll_treatment == "PAID"
     assert leave_type.is_active is True
 
 
@@ -26,6 +27,8 @@ def test_leave_type_construction_normalizes_values() -> None:
         {"leave_type_code": "x" * 31},
         {"leave_type_name": "x" * 101},
         {"description": "x" * 501},
+        {"payroll_treatment": "UNKNOWN"},
+        {"payroll_treatment": None},
     ],
 )
 def test_leave_type_rejects_invalid_values(values: dict[str, str]) -> None:
@@ -34,6 +37,7 @@ def test_leave_type_rejects_invalid_values(values: dict[str, str]) -> None:
         "leave_type_code": "ANNUAL",
         "leave_type_name": "Annual Leave",
         "description": None,
+        "payroll_treatment": "PAID",
         "is_active": True,
     }
     args.update(values)

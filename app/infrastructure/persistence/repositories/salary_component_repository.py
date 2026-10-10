@@ -23,6 +23,16 @@ class SalaryComponentRepository(SalaryComponentRepositoryContract):
             )
         )
 
+    def get_by_ids(self, salary_component_ids: set[int]) -> list[SalaryComponentModel]:
+        if not salary_component_ids:
+            return []
+        statement = (
+            select(SalaryComponentModel)
+            .where(SalaryComponentModel.salary_component_id.in_(salary_component_ids))
+            .order_by(SalaryComponentModel.salary_component_id)
+        )
+        return list(self.session.scalars(statement).all())
+
     def add(self, component: SalaryComponentModel) -> SalaryComponentModel:
         self.session.add(component)
         self.session.flush()

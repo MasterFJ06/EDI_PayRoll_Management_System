@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.domain.payroll.repository import PayrollResultRepository as PayrollResultRepositoryContract
@@ -16,6 +16,16 @@ class PayrollResultRepository(PayrollResultRepositoryContract):
             )
         )
 
+    def get_by_id_for_update(
+        self, payroll_result_id: int
+    ) -> PayrollResultModel | None:
+        return self.session.scalar(
+            select(PayrollResultModel)
+            .where(PayrollResultModel.payroll_result_id == payroll_result_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
     def get_by_run_and_employee(
         self, payroll_run_id: int, employee_id: int
     ) -> PayrollResultModel | None:
@@ -26,7 +36,23 @@ class PayrollResultRepository(PayrollResultRepositoryContract):
             )
         )
 
+    def list_by_run(self, payroll_run_id: int) -> list[PayrollResultModel]:
+        statement = (
+            select(PayrollResultModel)
+            .where(PayrollResultModel.payroll_run_id == payroll_run_id)
+            .order_by(PayrollResultModel.employee_id, PayrollResultModel.payroll_result_id)
+        )
+        return list(self.session.scalars(statement).all())
+
     def add(self, payroll_result: PayrollResultModel) -> PayrollResultModel:
         self.session.add(payroll_result)
         self.session.flush()
         return payroll_result
+
+    def delete_by_run(self, payroll_run_id: int) -> int:
+        result = self.session.execute(
+            delete(PayrollResultModel).where(
+                PayrollResultModel.payroll_run_id == payroll_run_id
+            )
+        )
+        return result.rowcount or 0

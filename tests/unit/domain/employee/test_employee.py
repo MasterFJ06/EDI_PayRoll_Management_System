@@ -30,7 +30,36 @@ def test_employee_can_be_created():
     assert employee.department_id == 10
     assert employee.designation_id == 20
     assert employee.joining_date == date(2026, 1, 1)
+    assert employee.employment_end_date is None
     assert employee.employment_status == Employee.ACTIVE
+
+
+@pytest.mark.parametrize(
+    "employment_end_date",
+    [None, date(2026, 1, 1), date(2026, 6, 30)],
+)
+def test_employee_accepts_valid_employment_interval(employment_end_date):
+    employee = create_employee(employment_end_date=employment_end_date)
+
+    assert employee.employment_end_date == employment_end_date
+
+
+def test_employee_rejects_end_date_before_joining_date():
+    with pytest.raises(
+        BusinessRuleViolation,
+        match="Employment end date cannot be before joining date",
+    ):
+        create_employee(employment_end_date=date(2025, 12, 31))
+
+
+def test_employment_interval_does_not_derive_employment_status():
+    employee = create_employee(
+        employment_status=Employee.TERMINATED,
+        employment_end_date=None,
+    )
+
+    assert employee.employment_status == Employee.TERMINATED
+    assert employee.employment_end_date is None
 
 
 def test_employee_normalizes_text_fields():

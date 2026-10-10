@@ -1,9 +1,13 @@
 from abc import ABC, abstractmethod
+from datetime import date
 
 from app.domain.payroll.payroll_processing_issue import PayrollProcessingIssue
 from app.domain.payroll.payroll_result import PayrollResult
 from app.domain.payroll.payroll_result_component import PayrollResultComponent
 from app.domain.payroll.payroll_run import PayrollRun
+from app.domain.payroll.payroll_run_workforce_snapshot import (
+    PayrollRunWorkforceSnapshot,
+)
 from app.domain.payroll.payslip import Payslip
 
 
@@ -15,7 +19,64 @@ class PayrollRunRepository(ABC):
     def get_by_period(self, payroll_year: int, payroll_month: int) -> PayrollRun | None: ...
 
     @abstractmethod
+    def get_statuses_overlapping_dates(
+        self, start_date: date, end_date: date | None
+    ) -> list[str]: ...
+
+    @abstractmethod
     def add(self, payroll_run: PayrollRun) -> PayrollRun: ...
+
+    @abstractmethod
+    def claim_for_processing(self, payroll_run_id: int) -> int | None: ...
+
+    @abstractmethod
+    def lock_active_attempt(
+        self, payroll_run_id: int, attempt_number: int
+    ) -> PayrollRun | None: ...
+
+    @abstractmethod
+    def lock_failed_attempt(
+        self, payroll_run_id: int
+    ) -> PayrollRun | None: ...
+
+    @abstractmethod
+    def retry_failed_attempt(
+        self, payroll_run_id: int, expected_attempt_number: int
+    ) -> int | None: ...
+
+    @abstractmethod
+    def mark_failed_if_processing(
+        self, payroll_run_id: int, attempt_number: int
+    ) -> bool: ...
+
+    @abstractmethod
+    def mark_processed_if_processing(
+        self, payroll_run_id: int, attempt_number: int
+    ) -> bool: ...
+
+
+class PayrollRunWorkforceSnapshotRepository(ABC):
+    @abstractmethod
+    def add(
+        self,
+        snapshot: PayrollRunWorkforceSnapshot,
+        expected_attempt_number: int,
+    ) -> PayrollRunWorkforceSnapshot: ...
+
+    @abstractmethod
+    def get_by_run_and_employee(
+        self, payroll_run_id: int, employee_id: int
+    ) -> PayrollRunWorkforceSnapshot | None: ...
+
+    @abstractmethod
+    def list_by_run_and_attempt(
+        self, payroll_run_id: int, attempt_number: int
+    ) -> tuple[PayrollRunWorkforceSnapshot, ...]: ...
+
+    @abstractmethod
+    def delete_by_run_and_attempt(
+        self, payroll_run_id: int, attempt_number: int
+    ) -> int: ...
 
 
 class PayrollResultRepository(ABC):
@@ -23,12 +84,23 @@ class PayrollResultRepository(ABC):
     def get_by_id(self, payroll_result_id: int) -> PayrollResult | None: ...
 
     @abstractmethod
+    def get_by_id_for_update(
+        self, payroll_result_id: int
+    ) -> PayrollResult | None: ...
+
+    @abstractmethod
     def get_by_run_and_employee(
         self, payroll_run_id: int, employee_id: int
     ) -> PayrollResult | None: ...
 
     @abstractmethod
+    def list_by_run(self, payroll_run_id: int) -> list[PayrollResult]: ...
+
+    @abstractmethod
     def add(self, payroll_result: PayrollResult) -> PayrollResult: ...
+
+    @abstractmethod
+    def delete_by_run(self, payroll_run_id: int) -> int: ...
 
 
 class PayrollResultComponentRepository(ABC):
@@ -38,12 +110,21 @@ class PayrollResultComponentRepository(ABC):
     ) -> PayrollResultComponent | None: ...
 
     @abstractmethod
+    def list_by_run(self, payroll_run_id: int) -> list[PayrollResultComponent]: ...
+
+    @abstractmethod
     def add(self, component: PayrollResultComponent) -> PayrollResultComponent: ...
+
+    @abstractmethod
+    def delete_by_run(self, payroll_run_id: int) -> int: ...
 
 
 class PayrollProcessingIssueRepository(ABC):
     @abstractmethod
     def get_by_id(self, payroll_issue_id: int) -> PayrollProcessingIssue | None: ...
+
+    @abstractmethod
+    def list_by_run(self, payroll_run_id: int) -> list[PayrollProcessingIssue]: ...
 
     @abstractmethod
     def add(self, issue: PayrollProcessingIssue) -> PayrollProcessingIssue: ...
@@ -58,6 +139,9 @@ class PayslipRepository(ABC):
 
     @abstractmethod
     def get_by_number(self, payslip_number: str) -> Payslip | None: ...
+
+    @abstractmethod
+    def get_by_run_id(self, payroll_run_id: int) -> Payslip | None: ...
 
     @abstractmethod
     def add(self, payslip: Payslip) -> Payslip: ...

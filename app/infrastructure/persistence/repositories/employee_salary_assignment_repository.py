@@ -1,4 +1,6 @@
-from sqlalchemy import select
+from datetime import date
+
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.domain.compensation.repository import (
@@ -19,6 +21,43 @@ class EmployeeSalaryAssignmentRepository(EmployeeSalaryAssignmentRepositoryContr
                 EmployeeSalaryAssignmentModel.salary_assignment_id == salary_assignment_id
             )
         )
+
+    def get_applicable_for_employee(
+        self, employee_id: int, snapshot_date: date
+    ) -> list[EmployeeSalaryAssignmentModel]:
+        statement = (
+            select(EmployeeSalaryAssignmentModel)
+            .where(
+                EmployeeSalaryAssignmentModel.employee_id == employee_id,
+                EmployeeSalaryAssignmentModel.effective_from <= snapshot_date,
+                or_(
+                    EmployeeSalaryAssignmentModel.effective_to.is_(None),
+                    EmployeeSalaryAssignmentModel.effective_to >= snapshot_date,
+                ),
+            )
+            .order_by(EmployeeSalaryAssignmentModel.salary_assignment_id)
+        )
+        return list(self.session.scalars(statement).all())
+
+    def get_intersecting_for_employee(
+        self, employee_id: int, period_start: date, period_end: date
+    ) -> list[EmployeeSalaryAssignmentModel]:
+        statement = (
+            select(EmployeeSalaryAssignmentModel)
+            .where(
+                EmployeeSalaryAssignmentModel.employee_id == employee_id,
+                EmployeeSalaryAssignmentModel.effective_from <= period_end,
+                or_(
+                    EmployeeSalaryAssignmentModel.effective_to.is_(None),
+                    EmployeeSalaryAssignmentModel.effective_to >= period_start,
+                ),
+            )
+            .order_by(
+                EmployeeSalaryAssignmentModel.effective_from,
+                EmployeeSalaryAssignmentModel.salary_assignment_id,
+            )
+        )
+        return list(self.session.scalars(statement).all())
 
     def add(
         self, assignment: EmployeeSalaryAssignmentModel

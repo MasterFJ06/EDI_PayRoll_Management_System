@@ -6,6 +6,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    JSON,
     Index,
     Integer,
     PrimaryKeyConstraint,
@@ -73,6 +74,9 @@ class PayrollResultModel(Base):
     gross_earnings: Mapped[Decimal] = mapped_column(DECIMAL(15, 2), nullable=False)
     total_deductions: Mapped[Decimal] = mapped_column(DECIMAL(15, 2), nullable=False)
     net_salary: Mapped[Decimal] = mapped_column(DECIMAL(15, 2), nullable=False)
+    workforce_calculation_snapshot: Mapped[dict[str, object] | None] = mapped_column(
+        JSON, nullable=True
+    )
     processed_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP")
     )

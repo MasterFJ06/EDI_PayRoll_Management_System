@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.domain.payroll.repository import (
@@ -7,6 +7,7 @@ from app.domain.payroll.repository import (
 from app.infrastructure.persistence.models.payroll_result_component import (
     PayrollResultComponentModel,
 )
+from app.infrastructure.persistence.models.payroll_result import PayrollResultModel
 
 
 class PayrollResultComponentRepository(PayrollResultComponentRepositoryContract):
@@ -23,9 +24,36 @@ class PayrollResultComponentRepository(PayrollResultComponentRepositoryContract)
             )
         )
 
+    def list_by_run(self, payroll_run_id: int) -> list[PayrollResultComponentModel]:
+        statement = (
+            select(PayrollResultComponentModel)
+            .join(
+                PayrollResultModel,
+                PayrollResultModel.payroll_result_id
+                == PayrollResultComponentModel.payroll_result_id,
+            )
+            .where(PayrollResultModel.payroll_run_id == payroll_run_id)
+            .order_by(
+                PayrollResultComponentModel.payroll_result_id,
+                PayrollResultComponentModel.salary_component_id,
+            )
+        )
+        return list(self.session.scalars(statement).all())
+
     def add(
         self, component: PayrollResultComponentModel
     ) -> PayrollResultComponentModel:
         self.session.add(component)
         self.session.flush()
         return component
+
+    def delete_by_run(self, payroll_run_id: int) -> int:
+        result_ids = select(PayrollResultModel.payroll_result_id).where(
+            PayrollResultModel.payroll_run_id == payroll_run_id
+        )
+        result = self.session.execute(
+            delete(PayrollResultComponentModel).where(
+                PayrollResultComponentModel.payroll_result_id.in_(result_ids)
+            )
+        )
+        return result.rowcount or 0

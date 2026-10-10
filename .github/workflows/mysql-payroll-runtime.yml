@@ -1,0 +1,98 @@
+name: MySQL Payroll Runtime Validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  payroll-mysql-integration:
+    name: Payroll integration on ephemeral MySQL 8
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: epms_r7_root_test_only
+          MYSQL_DATABASE: epms_r7_runtime_test
+          MYSQL_USER: epms_ci
+          MYSQL_PASSWORD: epms_r7_app_test_only
+        ports:
+          # The job runs directly on the GitHub-hosted runner, so localhost:3306
+          # reaches this service through the published port mapping.
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --host=127.0.0.1 --user=root --password=epms_r7_root_test_only"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+          --health-start-period=30s
+    env:
+      APP_ENV: test
+      DATABASE_HOST: 127.0.0.1
+      DATABASE_PORT: "3306"
+      DATABASE_NAME: epms_r7_runtime_test
+      DATABASE_USER: epms_ci
+      DATABASE_PASSWORD: epms_r7_app_test_only
+      JWT_SECRET_KEY: epms_r7_ephemeral_test_signing_key_only
+      JWT_ALGORITHM: HS256
+      EPMS_MYSQL_TEST_URL: mysql+pymysql://epms_ci:epms_r7_app_test_only@127.0.0.1:3306/epms_r7_runtime_test
+      EPMS_REQUIRE_MYSQL_TESTS: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned project dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Prepare snapshot for the isolated test database
+        shell: bash
+        run: |
+          set -euo pipefail
+          schema_file="$(python scripts/prepare_mysql_test_schema.py --database-name epms_r7_runtime_test)"
+          test -f "$schema_file"
+          printf 'EPMS_PREPARED_SCHEMA=%s\n' "$schema_file" >> "$GITHUB_ENV"
+          echo "Prepared snapshot: $schema_file"
+
+      - name: Import the prepared snapshot into ephemeral MySQL
+        shell: bash
+        env:
+          MYSQL_PWD: epms_r7_root_test_only
+        run: |
+          set -euo pipefail
+          test -n "${EPMS_PREPARED_SCHEMA:-}"
+          test -f "$EPMS_PREPARED_SCHEMA"
+          mysql --protocol=TCP --host=127.0.0.1 --port=3306 --user=root \
+            < "$EPMS_PREPARED_SCHEMA"
+
+      - name: Verify MySQL 8 connectivity and selected database
+        shell: bash
+        env:
+          MYSQL_PWD: epms_r7_app_test_only
+        run: |
+          set -euo pipefail
+          target="$(mysql --protocol=TCP --host=127.0.0.1 --port=3306 \
+            --user=epms_ci --database=epms_r7_runtime_test --batch --skip-column-names \
+            --execute='SELECT SUBSTRING_INDEX(VERSION(), ".", 1), DATABASE()')"
+          test "$target" = $'8\tepms_r7_runtime_test'
+          echo "Verified MySQL target: $target"
+
+      - name: Run five strict payroll MySQL integration tests (serial)
+        run: python -m pytest -q tests/integration/test_mysql_payroll_processing.py
+
+      - name: Run focused offline MySQL safety tests
+        run: >-
+          python -m pytest -q
+          tests/unit/infrastructure/database/test_mysql_integration_safety.py
+          tests/unit/infrastructure/database/test_mysql_test_schema_preparation.py
+
+      - name: Run full unit suite
+        run: python -m pytest -q tests/unit

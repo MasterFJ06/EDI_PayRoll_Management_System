@@ -96,6 +96,7 @@ Current request fields:
 - designation_id
 - manager_employee_id
 - joining_date
+- employment_end_date (optional; nullable date and inclusive employment end)
 
 Current response fields:
 
@@ -108,6 +109,7 @@ Current response fields:
 - designation_id
 - manager_employee_id
 - joining_date
+- employment_end_date
 - employment_status
 
 ---
@@ -155,9 +157,16 @@ Request fields:
 - `leave_type_code` (string, 1–30 characters)
 - `leave_type_name` (string, 1–100 characters)
 - `description` (optional string, up to 500 characters)
+- `payroll_treatment` (`PAID` or `UNPAID`, required; explicit and never inferred)
 - `is_active` (boolean, defaults to `true`)
 
-Response fields: `leave_type_id`, `leave_type_code`, `leave_type_name`, `description`, `is_active`.
+Response fields: `leave_type_id`, `leave_type_code`, `leave_type_name`, `description`, `payroll_treatment`, `is_active`.
+
+Requires `workforce.leave_type.manage`. Payroll treatment is mandatory and is
+restricted to `PAID` or `UNPAID`. There is no Leave Type update endpoint, so the
+treatment cannot be changed through the current API. Payroll-reference
+immutability for Leave Type treatment is deferred until the authoritative
+Payroll/Workforce reference contract exists; no Payroll reference is inferred.
 
 ## POST /api/v1/leave-balances
 
@@ -182,12 +191,31 @@ Request fields:
 - `start_date`, `end_date` (dates)
 - `requested_days` (positive decimal, up to four integer and two fractional digits)
 - `reason` (optional string, up to 1000 characters)
-- `status` (one of `PENDING`, `APPROVED`, `REJECTED`, `CANCELLED`; defaults to `PENDING`)
-- `reviewed_by_employee_id` (optional positive integer)
-- `reviewed_at` (optional datetime)
-- `review_comment` (optional string, up to 1000 characters)
+- `allocations` (non-empty list of `{leave_date, day_fraction}` where `day_fraction` is an exact decimal from `0.01` through `1.00` at hundredth precision)
 
-Response fields: `leave_request_id`, `employee_id`, `leave_type_id`, `start_date`, `end_date`, `requested_days`, `reason`, `status`, `reviewed_by_employee_id`, `reviewed_at`, `review_comment`.
+New requests always start as `PENDING`; status, reviewer, and review timestamps
+cannot be supplied by the client. Allocation dates must be unique, fall inside
+the inclusive request period, and classify as `WORKING_DAY` under the
+organization Work Calendar. The exact Decimal allocation sum must equal
+`requested_days`. Cross-period requests are supported without changing the
+aggregate; each date allocation remains authoritative.
+
+Response fields preserve the request data and include `allocations` with each
+date and exact decimal fraction.
+
+## Leave Request Lifecycle
+
+The following operations require their corresponding permission and derive the
+actor from authentication:
+
+- `POST /api/v1/leave-requests/{id}/approve` — `workforce.leave.approve`; requires a known `PAID`/`UNPAID` Leave Type treatment, valid allocations, and no approved allocation overlap for the same employee/date.
+- `POST /api/v1/leave-requests/{id}/reject` — `workforce.leave.reject`.
+- `POST /api/v1/leave-requests/{id}/cancel` — `workforce.leave.cancel`; pending and approved requests may be cancelled.
+
+Allowed transitions are `PENDING → APPROVED`, `PENDING → REJECTED`,
+`PENDING → CANCELLED`, and `APPROVED → CANCELLED`. Invalid transitions,
+unresolved treatment, invalid allocations, and approved overlaps return HTTP
+409. Missing requests return 404. Every operation records an audit event.
 
 Pydantic request validation failures return HTTP 422. Schema-backed domain rule failures, such as reversed dates or inconsistent review fields, use the centralized HTTP 409 response.
 
@@ -254,12 +282,13 @@ Request fields:
 - `fixed_amount` (optional nonnegative decimal, up to 15 digits and 2 decimal places)
 - `percentage_value` (optional nonnegative decimal, up to 8 digits and 4 decimal places)
 - `base_component_id` (optional positive integer referencing an existing component)
+- `is_overtime_base` (required boolean; defaults are not inferred by the server)
 
 For `FIXED`, `fixed_amount` is required and `percentage_value` and `base_component_id` must be null. For `PERCENTAGE`, `percentage_value` and `base_component_id` are required and `fixed_amount` must be null. These combinations follow the database check constraint; this endpoint does not calculate salary values.
 
-Successful response: HTTP 201 with `salary_revision_id`, `salary_component_id`, `calculation_type`, `fixed_amount`, `percentage_value`, and `base_component_id`.
+Successful response: HTTP 201 with `salary_revision_id`, `salary_component_id`, `calculation_type`, `fixed_amount`, `percentage_value`, `base_component_id`, and `is_overtime_base`.
 
-The revision/component pair is unique. Missing references, an invalid calculation-field combination, or a duplicate pair returns HTTP 409.
+The revision/component pair is unique. At most one component per revision may be designated as the OT base. A designated OT base must be an EARNING with FIXED calculation. Missing references, an invalid calculation-field combination, a duplicate pair, or an invalid OT-base designation returns HTTP 409. Existing components are not inferred or changed.
 
 ## POST /api/v1/employee-salary-assignments
 
@@ -311,9 +340,11 @@ Retrieves a Payroll Run for users with `payroll.run.read`. Successful response: 
 with the same Payroll Run fields returned by the create operation. A missing run returns
 HTTP 404. Employees and other users without the permission receive HTTP 403.
 
-Phase 2A created and retrieved Payroll Runs. Processing is implemented separately
-as a run claim only; payroll calculations and result, issue, or payslip creation
-are not part of the process operation.
+Phase 2A created and retrieved Payroll Runs. Processing claims the run and internally
+resolves eligible and excluded employees from their employment-date overlap with the
+payroll month. It returns the run status only and performs no payroll calculations or
+Payroll Result, component, or payslip creation. Compensation and segmentation blockers
+may create OPEN Payroll Processing Issues during processing.
 
 For these endpoints, unauthenticated requests return HTTP 401, authenticated requests
 without the required permission return HTTP 403, invalid period input returns HTTP 422,
@@ -328,8 +359,8 @@ Requires `payroll.run.process` and an active authenticated user. This operation
 atomically claims a run only when its current status is `CREATED`, sets `started_at`,
 and returns HTTP 200 with the existing Payroll Run response fields and status
 `PROCESSING`. The operation does not calculate payroll or create results, components,
-processing issues, or payslips. The request has no body; client-supplied state is not
-accepted.
+or payslips. Compensation/segmentation blockers may create OPEN Payroll Processing
+Issues. The request has no body; client-supplied state is not accepted.
 
 A missing run returns HTTP 404. A run in any status other than `CREATED` returns HTTP
 409. Simultaneous/duplicate requests are serialized by the conditional database update;
@@ -338,7 +369,34 @@ only one can claim the run and subsequent attempts return HTTP 409 without reset
 Unexpected orchestration failures use the centralized HTTP 500 response and attempt an
 atomic `PROCESSING` to `FAILED` transition. A started or failed lifecycle transition is
 recorded in the existing audit tables and includes the request correlation ID when
-available. Retry, finalization, calculation, and artifact generation are not implemented.
+available. Retry, finalization, calculation, and result/payslip artifact generation
+are not implemented.
+
+The processing workflow also resolves the internal Phase 2B-2 employee eligibility
+outcome. This does not change the HTTP response contract: eligible and excluded
+employee classifications are not returned by this endpoint.
+
+### Approved Retry Contract
+
+`POST /api/v1/payroll/runs/{run_id}/retry` is the approved contract for controlled
+Payroll Run retry. It requires an active authenticated user with
+`payroll.run.retry`; the actor is derived from that authenticated user. Only a run
+in `FAILED` may be retried. The operation reconciles failed results, result
+components, and failed-attempt temporary Workforce snapshots, then activates the
+next attempt atomically. It does not modify issues, audit history, or payslips.
+The existing `/process` operation remains `CREATED`-only.
+
+Success returns HTTP 200 using the existing Payroll Run response fields, with
+status `PROCESSING`. `attempt_number` may remain internal. Unauthenticated
+requests return HTTP 401; authenticated users without the permission receive HTTP
+403; a missing run returns HTTP 404; a wrong state, stale attempt, or attached
+payslip invariant returns HTTP 409. Concurrent retry requests are serialized so
+exactly one succeeds and the loser receives HTTP 409.
+
+The expected attempt number used by the retry application service is resolved
+internally from the requested Payroll Run; it is not part of the public request
+or response contract. The transactional retry operation revalidates the attempt
+under the Payroll Run row lock.
 
 ---
 
@@ -368,10 +426,56 @@ The development seed catalog includes the `Payroll Administrator` role and granu
 permissions `payroll.run.create`, `payroll.run.read`, `payroll.run.process`,
 `payroll.run.retry`, and `payroll.run.finalize`. No user is assigned to the role by the
 seed data. Implemented Payroll Run operations are documented in the Phase 2A and
-Phase 2B-1 sections above; retry, finalization, and payslip operations remain
-unimplemented.
+Phase 2B-1 sections above. Retry is contractually defined above but remains
+unimplemented; finalization and payslip operations also remain unimplemented.
 
 ---
+
+## Work Calendar
+
+### POST /api/v1/work-calendar-versions
+
+Requires `organization.calendar.manage`. Creates an immutable organization-wide
+calendar version with `version_number`, inclusive `effective_from` and optional
+`effective_to`, IANA `time_zone`, optional `replaces_version_id`, and exactly
+seven weekly rules (`iso_weekday`, `classification`, `scheduled_minutes`). The
+authenticated user is recorded as creator. Returns the version, rules, and
+initially empty date override list (201). Effective-date overlap returns 409;
+invalid request data returns 422.
+
+### GET /api/v1/work-calendar-versions/{version_id}
+
+Requires `organization.calendar.read`. Returns version metadata, creator user
+identifier, all seven weekly rules, and date overrides. Missing versions return
+404.
+
+### POST /api/v1/work-calendar-versions/{version_id}/date-overrides
+
+Requires `organization.calendar.manage`. Request fields are `override_date`,
+`classification` (`WORKING_DAY`, `NON_WORKING_DAY`, or `HOLIDAY`), and optional
+`label` (required and non-blank for `HOLIDAY`). Returns the created override
+(201). Dates outside the version period, duplicates, and corrections while any
+affected monthly Payroll Run is not `FAILED` return 409.
+
+## Workforce Overtime Policy
+
+### POST /api/v1/workforce/overtime-policy-versions
+
+Requires `workforce.overtime_policy.manage`. Creates an immutable, effective-dated
+policy version. Request fields are `version_number`, inclusive `effective_from`,
+optional inclusive `effective_to`, and `non_working_multiplier` (nonnegative
+DECIMAL(8,4)). The authenticated user is recorded as creator. Overlapping policy
+periods or a duplicate version number return 409; invalid input returns 422.
+Creation and audit are committed in the same Unit of Work.
+
+### GET /api/v1/workforce/overtime-policy-versions/{policy_id}
+
+Requires `workforce.overtime_policy.read`. Returns policy metadata, effective
+dates, multiplier, and creator identifier. Missing policy versions return 404.
+
+Policy versions are resolved by inclusive effective date; gaps have no applicable
+policy and persisted overlaps are treated as invalid state. There is no policy
+update/correction endpoint in this contract.
 
 # Error Responses
 

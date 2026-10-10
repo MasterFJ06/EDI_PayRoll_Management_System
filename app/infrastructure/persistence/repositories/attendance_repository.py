@@ -27,6 +27,18 @@ class AttendanceRepository:
         )
         return self.session.scalar(statement)
 
+    def get_for_employee_period(self, employee_id: int, start_date: date, end_date: date) -> list[AttendanceRecord]:
+        statement = (
+            select(AttendanceRecord)
+            .where(
+                AttendanceRecord.employee_id == employee_id,
+                AttendanceRecord.attendance_date >= start_date,
+                AttendanceRecord.attendance_date <= end_date,
+            )
+            .order_by(AttendanceRecord.attendance_date, AttendanceRecord.attendance_id)
+        )
+        return list(self.session.scalars(statement).all())
+
     def add(self, attendance: AttendanceRecord) -> AttendanceRecord:
         self.session.add(attendance)
         self.session.flush()

@@ -100,6 +100,7 @@ class EmployeeService:
             designation_id=request.designation_id,
             manager_employee_id=request.manager_employee_id,
             joining_date=request.joining_date,
+            employment_end_date=request.employment_end_date,
         )
 
         # ---------------------------------------------------------
@@ -114,6 +115,7 @@ class EmployeeService:
             designation_id=employee.designation_id,
             manager_employee_id=employee.manager_employee_id,
             joining_date=employee.joining_date,
+            employment_end_date=employee.employment_end_date,
             employment_status=employee.employment_status,
         )
 
@@ -130,5 +132,6 @@ class EmployeeService:
             designation_id=employee_model.designation_id,
             manager_employee_id=employee_model.manager_employee_id,
             joining_date=employee_model.joining_date,
+            employment_end_date=employee_model.employment_end_date,
             employment_status=employee_model.employment_status,
         )

@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from datetime import date
 
 from app.domain.compensation.employee_salary_assignment import EmployeeSalaryAssignment
 from app.domain.compensation.salary_component import SalaryComponent
@@ -26,6 +27,9 @@ class SalaryComponentRepository(ABC):
     def get_by_code(self, component_code: str) -> SalaryComponent | None: ...
 
     @abstractmethod
+    def get_by_ids(self, salary_component_ids: set[int]) -> list[SalaryComponent]: ...
+
+    @abstractmethod
     def add(self, component: SalaryComponent) -> SalaryComponent: ...
 
 
@@ -49,12 +53,27 @@ class SalaryRevisionComponentRepository(ABC):
     ) -> SalaryRevisionComponent | None: ...
 
     @abstractmethod
+    def get_by_revision(
+        self, salary_revision_id: int
+    ) -> list[SalaryRevisionComponent]: ...
+
+    @abstractmethod
     def add(self, component: SalaryRevisionComponent) -> SalaryRevisionComponent: ...
 
 
 class EmployeeSalaryAssignmentRepository(ABC):
     @abstractmethod
     def get_by_id(self, salary_assignment_id: int) -> EmployeeSalaryAssignment | None: ...
+
+    @abstractmethod
+    def get_applicable_for_employee(
+        self, employee_id: int, snapshot_date: date
+    ) -> list[EmployeeSalaryAssignment]: ...
+
+    @abstractmethod
+    def get_intersecting_for_employee(
+        self, employee_id: int, period_start: date, period_end: date
+    ) -> list[EmployeeSalaryAssignment]: ...
 
     @abstractmethod
     def add(self, assignment: EmployeeSalaryAssignment) -> EmployeeSalaryAssignment: ...

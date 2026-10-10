@@ -63,6 +63,11 @@ class Employee(Base):
         nullable=False,
     )
 
+    employment_end_date: Mapped[date | None] = mapped_column(
+        Date,
+        nullable=True,
+    )
+
     employment_status: Mapped[str] = mapped_column(
         String(20),
         nullable=False,

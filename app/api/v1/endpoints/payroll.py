@@ -10,6 +10,7 @@ from app.application.payroll.payroll_run_service import PayrollRunService
 from app.application.payroll.payroll_processing_orchestrator import (
     PayrollProcessingOrchestrator,
 )
+from app.application.payroll.payroll_run_retry_service import PayrollRunRetryService
 from app.application.payroll.schemas import PayrollRunCreateRequest, PayrollRunResponse
 from app.infrastructure.persistence.models.user import User
 
@@ -74,6 +75,41 @@ def process_payroll_run(
         current_user.user_id,
         getattr(request.state, "request_id", None),
     )
+    if response is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Payroll Run not found.",
+        )
+    return response.payroll_run
+
+
+@router.post(
+    "/runs/{run_id}/retry",
+    response_model=PayrollRunResponse,
+)
+def retry_payroll_run(
+    run_id: Annotated[int, Path(gt=0)],
+    request: Request,
+    current_user: Annotated[
+        User, Depends(require_permission("payroll.run.retry"))
+    ],
+    uow: Annotated[UnitOfWork, Depends(get_unit_of_work)],
+) -> PayrollRunResponse:
+    run = uow.payroll_runs.get_by_id(run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Payroll Run not found.",
+        )
+
+    PayrollRunRetryService(uow).retry_failed_payroll_run(
+        run_id,
+        run.attempt_number,
+        current_user.user_id,
+        getattr(request.state, "request_id", None),
+    )
+
+    response = PayrollRunService(uow).get(run_id)
     if response is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from datetime import datetime
 from types import TracebackType
 from typing import Self
 
@@ -23,10 +24,13 @@ class UnitOfWork(ABC):
     salary_revision_components: object
     employee_salary_assignments: object
     payroll_runs: object
+    payroll_run_workforce_snapshots: object
     payroll_results: object
     payroll_result_components: object
     payroll_processing_issues: object
     payslips: object
+    work_calendars: object
+    overtime_policies: object
 
     @abstractmethod
     def __enter__(self) -> Self:
@@ -47,4 +51,9 @@ class UnitOfWork(ABC):
 
     @abstractmethod
     def rollback(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def begin_workforce_consistent_read(self) -> datetime:
+        """Begin Decision 31's explicit MySQL consistent-read transaction."""
         raise NotImplementedError

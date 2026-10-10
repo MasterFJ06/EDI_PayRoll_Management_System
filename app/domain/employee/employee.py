@@ -27,6 +27,7 @@ class Employee(Entity[int | None]):
         employment_status: str = ACTIVE,
         user_id: int | None = None,
         manager_employee_id: int | None = None,
+        employment_end_date: date | None = None,
     ) -> None:
         normalized_code = employee_code.strip()
         normalized_first_name = first_name.strip()
@@ -63,6 +64,11 @@ class Employee(Entity[int | None]):
                 "Employee employment status must be ACTIVE, INACTIVE, or TERMINATED."
             )
 
+        if employment_end_date is not None and employment_end_date < joining_date:
+            raise BusinessRuleViolation(
+                "Employment end date cannot be before joining date."
+            )
+
         if manager_employee_id is not None and employee_id is not None:
             if manager_employee_id == employee_id:
                 raise BusinessRuleViolation(
@@ -79,6 +85,7 @@ class Employee(Entity[int | None]):
         self.designation_id = designation_id
         self.manager_employee_id = manager_employee_id
         self.joining_date = joining_date
+        self.employment_end_date = employment_end_date
         self.employment_status = normalized_status
 
     def activate(self) -> None:

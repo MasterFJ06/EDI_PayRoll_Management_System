@@ -19,6 +19,7 @@ def create_request(**overrides) -> EmployeeCreateRequest:
         "designation_id": 20,
         "manager_employee_id": None,
         "joining_date": date(2026, 1, 1),
+        "employment_end_date": None,
     }
     data.update(overrides)
     return EmployeeCreateRequest(**data)
@@ -77,6 +78,10 @@ def test_create_employee():
     assert result.department_id == 10
     assert result.designation_id == 20
     assert result.employment_status == "ACTIVE"
+    assert result.employment_end_date is None
+
+    saved_employee = uow.employees.add.call_args.args[0]
+    assert saved_employee.employment_end_date is None
 
     uow.employees.add.assert_called_once()
     uow.commit.assert_called_once()
@@ -101,6 +106,24 @@ def test_create_employee_without_user():
     assert result.employee_id == 101
     assert result.user_id is None
     uow.users.get_by_id.assert_not_called()
+
+
+def test_create_employee_preserves_employment_end_date():
+    uow = create_uow()
+    configure_valid_dependencies(uow)
+    uow.employees.add.side_effect = lambda employee: setattr(
+        employee, "employee_id", 102
+    )
+
+    result = EmployeeService(uow).create(
+        create_request(employment_end_date=date(2026, 6, 30))
+    )
+
+    assert result.employment_end_date == date(2026, 6, 30)
+    assert (
+        uow.employees.add.call_args.args[0].employment_end_date
+        == date(2026, 6, 30)
+    )
 
 
 def test_create_employee_rejects_duplicate_employee_code():

@@ -10,6 +10,10 @@ from app.api.dependencies.unit_of_work import get_unit_of_work
 from app.application.payroll.payroll_processing_orchestrator import (
     PayrollProcessingOrchestrator,
 )
+from app.application.payroll.workforce_snapshot_materializer import (
+    WorkforceSnapshotMaterialization,
+    WorkforceSnapshotMaterializer,
+)
 from app.infrastructure.security.jwt import create_access_token
 from app.main import app
 
@@ -23,19 +27,46 @@ class ProcessingRunRepository:
             status=status,
             initiated_by_user_id=12,
             started_at=None,
+            attempt_number=0,
+            attempt_lease_expires_at=None,
+            completed_at=None,
         )
 
-    def claim_for_processing(self, run_id: int) -> bool:
+    def claim_for_processing(self, run_id: int) -> int | None:
         if run_id != self.run.payroll_run_id or self.run.status != "CREATED":
-            return False
+            return None
         self.run.status = "PROCESSING"
         self.run.started_at = datetime(2026, 10, 1, 12, 0, 0)
-        return True
+        self.run.attempt_number += 1
+        self.run.attempt_lease_expires_at = datetime(2026, 10, 1, 12, 15, 0)
+        return self.run.attempt_number
 
-    def mark_failed_if_processing(self, run_id: int) -> bool:
-        if run_id != self.run.payroll_run_id or self.run.status != "PROCESSING":
+    def mark_failed_if_processing(self, run_id: int, attempt_number: int) -> bool:
+        if (
+            run_id != self.run.payroll_run_id
+            or self.run.status != "PROCESSING"
+            or self.run.attempt_number != attempt_number
+        ):
             return False
         self.run.status = "FAILED"
+        self.run.attempt_lease_expires_at = None
+        return True
+
+    def lock_active_attempt(self, run_id: int, attempt_number: int):
+        if (
+            run_id != self.run.payroll_run_id
+            or self.run.status != "PROCESSING"
+            or self.run.attempt_number != attempt_number
+        ):
+            return None
+        return self.run
+
+    def mark_processed_if_processing(self, run_id: int, attempt_number: int) -> bool:
+        if self.lock_active_attempt(run_id, attempt_number) is None:
+            return False
+        self.run.status = "PROCESSED"
+        self.run.completed_at = datetime(2026, 10, 1, 12, 1, 0)
+        self.run.attempt_lease_expires_at = None
         return True
 
     def get_by_id(self, run_id: int) -> SimpleNamespace | None:
@@ -54,6 +85,11 @@ class AuditEventFake:
         return event
 
 
+class EmployeeRepositoryFake:
+    def list_all(self) -> list[object]:
+        return []
+
+
 class ProcessingUnitOfWork:
     def __init__(self, status: str = "CREATED") -> None:
         self.user = SimpleNamespace(
@@ -67,12 +103,34 @@ class ProcessingUnitOfWork:
         self.authorization.has_permission.return_value = True
         self.payroll_runs = ProcessingRunRepository(status)
         self.audit_events = AuditEventFake()
+        self.employees = EmployeeRepositoryFake()
+        self.employee_salary_assignments = SimpleNamespace(
+            get_applicable_for_employee=lambda employee_id, snapshot_date: []
+        )
+        self.salary_revisions = SimpleNamespace(get_by_id=lambda revision_id: None)
+        self.salary_revision_components = SimpleNamespace(
+            get_by_revision=lambda revision_id: []
+        )
+        self.salary_components = SimpleNamespace(get_by_ids=lambda component_ids: [])
         self.payroll_results = Mock()
+        self.payroll_results.list_by_run.return_value = []
         self.payroll_result_components = Mock()
+        self.payroll_result_components.list_by_run.return_value = []
         self.payroll_processing_issues = Mock()
+        self.payroll_processing_issues.list_by_run.return_value = []
+        self.payroll_processing_issues.add.side_effect = self._add_issue
+        self.payroll_run_workforce_snapshots = SimpleNamespace(
+            list_by_run_and_attempt=lambda *_args: []
+        )
+        self._issues = []
         self.payslips = Mock()
         self.commit_count = 0
         self.rollback_count = 0
+
+    def _add_issue(self, issue):
+        issue.payroll_issue_id = len(self._issues) + 1
+        self._issues.append(issue)
+        return issue
 
     def commit(self) -> None:
         self.commit_count += 1
@@ -80,10 +138,20 @@ class ProcessingUnitOfWork:
     def rollback(self) -> None:
         self.rollback_count += 1
 
+    def begin_workforce_consistent_read(self) -> datetime:
+        return datetime(2026, 10, 1, 12, 0, 0)
+
 
 @pytest.fixture
-def fake_uow() -> Generator[ProcessingUnitOfWork, None, None]:
+def fake_uow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[ProcessingUnitOfWork, None, None]:
     uow = ProcessingUnitOfWork()
+    monkeypatch.setattr(
+        WorkforceSnapshotMaterializer,
+        "collect",
+        lambda *_args, **_kwargs: WorkforceSnapshotMaterialization((), ()),
+    )
     app.dependency_overrides[get_unit_of_work] = lambda: uow
     yield uow
     app.dependency_overrides.clear()
@@ -108,14 +176,17 @@ def test_process_created_run_claims_and_audits_processing_start(
     )
 
     assert response.status_code == 200
-    assert response.json()["status"] == "PROCESSING"
+    assert response.json()["status"] == "FAILED"
     assert fake_uow.payroll_runs.run.started_at is not None
-    assert fake_uow.commit_count == 1
+    assert fake_uow.payroll_runs.run.attempt_number == 1
+    assert fake_uow.payroll_runs.run.attempt_lease_expires_at is None
+    assert fake_uow.payroll_runs.run.completed_at is None
+    assert fake_uow.commit_count == 4
     assert fake_uow.authorization.has_permission.call_args.args == (
         12,
         "payroll.run.process",
     )
-    assert len(fake_uow.audit_events.events) == 1
+    assert len(fake_uow.audit_events.events) == 2
     event, changes = fake_uow.audit_events.events[0]
     assert event.action_type == "PAYROLL_RUN_PROCESSING_STARTED"
     assert event.correlation_id == response.headers["X-Request-ID"]
@@ -141,7 +212,7 @@ def test_process_endpoint_does_not_accept_client_state_changes(
     )
 
     assert response.status_code == 200
-    assert response.json()["status"] == "PROCESSING"
+    assert response.json()["status"] == "FAILED"
 
 
 @pytest.mark.parametrize("initial_status", ["PROCESSING", "PROCESSED", "FAILED", "FINALIZED"])
@@ -174,10 +245,10 @@ def test_duplicate_process_requests_only_start_one_attempt(
 
     assert first.status_code == 200
     assert second.status_code == 409
-    assert fake_uow.payroll_runs.run.status == "PROCESSING"
+    assert fake_uow.payroll_runs.run.status == "FAILED"
     assert fake_uow.payroll_runs.run.started_at == started_at
-    assert fake_uow.commit_count == 1
-    assert len(fake_uow.audit_events.events) == 1
+    assert fake_uow.commit_count == 4
+    assert len(fake_uow.audit_events.events) == 2
 
 
 def test_missing_run_returns_404(client: TestClient, fake_uow: ProcessingUnitOfWork) -> None:
@@ -231,6 +302,8 @@ def test_orchestration_failure_marks_run_failed_and_returns_sanitized_500(
     assert response.json()["error"]["code"] == "INTERNAL_SERVER_ERROR"
     assert "private payroll details" not in response.text
     assert fake_uow.payroll_runs.run.status == "FAILED"
+    assert fake_uow.payroll_runs.run.attempt_number == 1
+    assert fake_uow.payroll_runs.run.attempt_lease_expires_at is None
     assert fake_uow.commit_count == 2
     assert [event.action_type for event, _ in fake_uow.audit_events.events] == [
         "PAYROLL_RUN_PROCESSING_STARTED",

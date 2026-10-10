@@ -15,10 +15,23 @@ class PayrollProcessingIssueService:
         self.uow = uow
 
     def create(
-        self, request: PayrollProcessingIssueCreateRequest
+        self,
+        request: PayrollProcessingIssueCreateRequest,
+        attempt_number: int,
+        *,
+        commit: bool = True,
     ) -> PayrollProcessingIssueResponse:
         if self.uow.payroll_runs.get_by_id(request.payroll_run_id) is None:
             raise BusinessRuleViolation("Payroll run does not exist.")
+        if (
+            self.uow.payroll_runs.lock_active_attempt(
+                request.payroll_run_id, attempt_number
+            )
+            is None
+        ):
+            raise BusinessRuleViolation(
+                "Payroll processing attempt is no longer active."
+            )
         if request.employee_id is not None and self.uow.employees.get_by_id(
             request.employee_id
         ) is None:
@@ -41,7 +54,8 @@ class PayrollProcessingIssueService:
             resolved_at=issue.resolved_at,
         )
         self.uow.payroll_processing_issues.add(model)
-        self.uow.commit()
+        if commit:
+            self.uow.commit()
         return PayrollProcessingIssueResponse(
             payroll_issue_id=model.payroll_issue_id,
             payroll_run_id=model.payroll_run_id,

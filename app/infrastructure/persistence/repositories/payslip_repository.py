@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.payroll.repository import PayslipRepository as PayslipRepositoryContract
 from app.infrastructure.persistence.models.payslip import PayslipModel
+from app.infrastructure.persistence.models.payroll_result import PayrollResultModel
 
 
 class PayslipRepository(PayslipRepositoryContract):
@@ -22,6 +23,17 @@ class PayslipRepository(PayslipRepositoryContract):
     def get_by_number(self, payslip_number: str) -> PayslipModel | None:
         return self.session.scalar(
             select(PayslipModel).where(PayslipModel.payslip_number == payslip_number)
+        )
+
+    def get_by_run_id(self, payroll_run_id: int) -> PayslipModel | None:
+        return self.session.scalar(
+            select(PayslipModel)
+            .join(
+                PayrollResultModel,
+                PayslipModel.payroll_result_id == PayrollResultModel.payroll_result_id,
+            )
+            .where(PayrollResultModel.payroll_run_id == payroll_run_id)
+            .limit(1)
         )
 
     def add(self, payslip: PayslipModel) -> PayslipModel:

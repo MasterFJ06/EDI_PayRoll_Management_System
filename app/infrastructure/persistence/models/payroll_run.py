@@ -54,6 +54,12 @@ class PayrollRunModel(Base):
         nullable=False,
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    attempt_number: Mapped[int] = mapped_column(
+        _UNSIGNED_BIGINT, nullable=False, server_default=text("0")
+    )
+    attempt_lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime().with_variant(mysql.DATETIME(fsp=6), "mysql"), nullable=True
+    )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finalized_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

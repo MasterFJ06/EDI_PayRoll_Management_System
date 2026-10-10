@@ -26,6 +26,18 @@ class EmployeeRepository:
         )
         return self.session.scalar(statement)
 
+    def get_by_id_for_update(self, employee_id: int) -> Employee | None:
+        statement = (
+            select(Employee)
+            .where(Employee.employee_id == employee_id)
+            .with_for_update()
+        )
+        return self.session.scalar(statement)
+
+    def list_all(self) -> list[Employee]:
+        statement = select(Employee).order_by(Employee.employee_id)
+        return list(self.session.scalars(statement).all())
+
     def add(self, employee: Employee) -> Employee:
         self.session.add(employee)
         self.session.flush()

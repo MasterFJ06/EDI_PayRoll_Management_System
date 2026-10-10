@@ -9,9 +9,25 @@ class PayrollResultService:
     def __init__(self, uow: UnitOfWork) -> None:
         self.uow = uow
 
-    def create(self, request: PayrollResultCreateRequest) -> PayrollResultResponse:
+    def create(
+        self,
+        request: PayrollResultCreateRequest,
+        attempt_number: int,
+        *,
+        commit: bool = True,
+        workforce_calculation_snapshot: dict[str, object] | None = None,
+    ) -> PayrollResultResponse:
         if self.uow.payroll_runs.get_by_id(request.payroll_run_id) is None:
             raise BusinessRuleViolation("Payroll run does not exist.")
+        if (
+            self.uow.payroll_runs.lock_active_attempt(
+                request.payroll_run_id, attempt_number
+            )
+            is None
+        ):
+            raise BusinessRuleViolation(
+                "Payroll processing attempt is no longer active."
+            )
         if self.uow.employees.get_by_id(request.employee_id) is None:
             raise BusinessRuleViolation("Employee does not exist.")
         if self.uow.employee_salary_assignments.get_by_id(request.salary_assignment_id) is None:
@@ -36,9 +52,11 @@ class PayrollResultService:
             gross_earnings=result.gross_earnings,
             total_deductions=result.total_deductions,
             net_salary=result.net_salary,
+            workforce_calculation_snapshot=workforce_calculation_snapshot,
         )
         self.uow.payroll_results.add(model)
-        self.uow.commit()
+        if commit:
+            self.uow.commit()
         return PayrollResultResponse(
             payroll_result_id=model.payroll_result_id,
             payroll_run_id=model.payroll_run_id,

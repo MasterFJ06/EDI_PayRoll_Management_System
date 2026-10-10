@@ -22,6 +22,18 @@ class SalaryRevisionComponentRepository(SalaryRevisionComponentRepositoryContrac
         )
         return self.session.scalar(statement)
 
+    def get_by_revision(
+        self, salary_revision_id: int
+    ) -> list[SalaryRevisionComponentModel]:
+        statement = (
+            select(SalaryRevisionComponentModel)
+            .where(
+                SalaryRevisionComponentModel.salary_revision_id == salary_revision_id
+            )
+            .order_by(SalaryRevisionComponentModel.salary_component_id)
+        )
+        return list(self.session.scalars(statement).all())
+
     def add(
         self, component: SalaryRevisionComponentModel
     ) -> SalaryRevisionComponentModel:

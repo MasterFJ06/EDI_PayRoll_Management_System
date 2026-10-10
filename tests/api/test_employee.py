@@ -188,6 +188,7 @@ def test_create_employee(
     assert data["designation_id"] == 20
     assert data["manager_employee_id"] is None
     assert data["joining_date"] == "2026-01-01"
+    assert data["employment_end_date"] is None
     assert data["employment_status"] == "ACTIVE"
 
     assert fake_uow.committed is True
@@ -211,6 +212,31 @@ def test_create_employee_without_user(
     data = response.json()
 
     assert data["user_id"] is None
+
+
+def test_create_employee_returns_employment_end_date(client, fake_uow):
+    response = client.post(
+        "/api/v1/employees",
+        json=employee_payload(employment_end_date="2026-06-30"),
+        headers=authenticated_headers(),
+    )
+
+    assert response.status_code == 201
+    assert response.json()["employment_end_date"] == "2026-06-30"
+
+
+def test_create_employee_rejects_end_date_before_joining_date(client, fake_uow):
+    response = client.post(
+        "/api/v1/employees",
+        json=employee_payload(employment_end_date="2025-12-31"),
+        headers=authenticated_headers(),
+    )
+
+    assert response.status_code == 409
+    assert (
+        "Employment end date cannot be before joining date"
+        in response.json()["detail"]
+    )
 
 
 def test_create_employee_rejects_duplicate_code(

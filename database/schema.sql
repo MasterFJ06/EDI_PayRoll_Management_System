@@ -6,7 +6,7 @@
 -- Target DBMS : MySQL 8.x
 -- Engine      : InnoDB
 -- Normal Form : 3NF
--- Tables      : 27
+-- Tables      : 32
 -- =====================================================================
 
 
@@ -278,6 +278,7 @@ CREATE TABLE employees (
     manager_employee_id BIGINT UNSIGNED NULL,
 
     joining_date DATE NOT NULL,
+    employment_end_date DATE NULL,
 
     employment_status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
 
@@ -420,6 +421,105 @@ CREATE TABLE employment_history (
 
 
 -- =====================================================================
+-- 10A. WORK_CALENDAR_VERSIONS
+-- =====================================================================
+
+CREATE TABLE work_calendar_versions (
+    work_calendar_version_id BIGINT UNSIGNED AUTO_INCREMENT,
+    version_number INT UNSIGNED NOT NULL,
+    effective_from DATE NOT NULL,
+    effective_to DATE NULL,
+    time_zone VARCHAR(64) NOT NULL,
+    created_by_user_id BIGINT UNSIGNED NOT NULL,
+    replaces_version_id BIGINT UNSIGNED NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT pk_work_calendar_versions
+        PRIMARY KEY (work_calendar_version_id),
+    CONSTRAINT uq_work_calendar_version_number
+        UNIQUE (version_number),
+    CONSTRAINT chk_work_calendar_version_dates
+        CHECK (effective_to IS NULL OR effective_to >= effective_from),
+    CONSTRAINT fk_work_calendar_version_creator
+        FOREIGN KEY (created_by_user_id)
+        REFERENCES users(user_id)
+        ON DELETE RESTRICT
+        ON UPDATE RESTRICT,
+    CONSTRAINT fk_work_calendar_version_replacement
+        FOREIGN KEY (replaces_version_id)
+        REFERENCES work_calendar_versions(work_calendar_version_id)
+        ON DELETE RESTRICT
+        ON UPDATE RESTRICT,
+    INDEX idx_work_calendar_version_dates (effective_from, effective_to),
+    INDEX idx_work_calendar_version_replacement (replaces_version_id)
+) ENGINE = InnoDB;
+
+
+-- =====================================================================
+-- 10B. WORK_CALENDAR_WEEKLY_RULES
+-- =====================================================================
+
+CREATE TABLE work_calendar_weekly_rules (
+    work_calendar_weekly_rule_id BIGINT UNSIGNED AUTO_INCREMENT,
+    work_calendar_version_id BIGINT UNSIGNED NOT NULL,
+    iso_weekday TINYINT UNSIGNED NOT NULL,
+    classification VARCHAR(20) NOT NULL,
+    scheduled_minutes SMALLINT UNSIGNED NOT NULL,
+
+    CONSTRAINT pk_work_calendar_weekly_rules
+        PRIMARY KEY (work_calendar_weekly_rule_id),
+    CONSTRAINT uq_work_calendar_weekday
+        UNIQUE (work_calendar_version_id, iso_weekday),
+    CONSTRAINT chk_work_calendar_iso_weekday
+        CHECK (iso_weekday BETWEEN 1 AND 7),
+    CONSTRAINT chk_work_calendar_weekly_classification
+        CHECK (classification IN ('WORKING_DAY', 'NON_WORKING_DAY')),
+    CONSTRAINT chk_work_calendar_weekly_minutes
+        CHECK (
+            (classification = 'WORKING_DAY' AND scheduled_minutes = 480)
+            OR (classification = 'NON_WORKING_DAY' AND scheduled_minutes = 0)
+        ),
+    CONSTRAINT fk_work_calendar_weekly_version
+        FOREIGN KEY (work_calendar_version_id)
+        REFERENCES work_calendar_versions(work_calendar_version_id)
+        ON DELETE CASCADE
+        ON UPDATE RESTRICT
+) ENGINE = InnoDB;
+
+
+-- =====================================================================
+-- 10C. WORK_CALENDAR_DATE_OVERRIDES
+-- =====================================================================
+
+CREATE TABLE work_calendar_date_overrides (
+    work_calendar_date_override_id BIGINT UNSIGNED AUTO_INCREMENT,
+    work_calendar_version_id BIGINT UNSIGNED NOT NULL,
+    override_date DATE NOT NULL,
+    classification VARCHAR(20) NOT NULL,
+    label VARCHAR(100) NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT pk_work_calendar_date_overrides
+        PRIMARY KEY (work_calendar_date_override_id),
+    CONSTRAINT uq_work_calendar_date_override
+        UNIQUE (work_calendar_version_id, override_date),
+    CONSTRAINT chk_work_calendar_override_classification
+        CHECK (classification IN ('WORKING_DAY', 'NON_WORKING_DAY', 'HOLIDAY')),
+    CONSTRAINT chk_work_calendar_holiday_label
+        CHECK (
+            classification <> 'HOLIDAY'
+            OR (label IS NOT NULL AND CHAR_LENGTH(TRIM(label)) > 0)
+        ),
+    CONSTRAINT fk_work_calendar_override_version
+        FOREIGN KEY (work_calendar_version_id)
+        REFERENCES work_calendar_versions(work_calendar_version_id)
+        ON DELETE CASCADE
+        ON UPDATE RESTRICT,
+    INDEX idx_work_calendar_override_date (override_date)
+) ENGINE = InnoDB;
+
+
+-- =====================================================================
 -- 10. ATTENDANCE_RECORDS
 -- =====================================================================
 
@@ -491,6 +591,8 @@ CREATE TABLE leave_types (
 
     description VARCHAR(500) NULL,
 
+    payroll_treatment VARCHAR(10) NOT NULL,
+
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
 
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -505,7 +607,10 @@ CREATE TABLE leave_types (
         UNIQUE (leave_type_code),
 
     CONSTRAINT uq_leave_types_name
-        UNIQUE (leave_type_name)
+        UNIQUE (leave_type_name),
+
+    CONSTRAINT chk_leave_types_payroll_treatment
+        CHECK (payroll_treatment IN ('PAID', 'UNPAID'))
 ) ENGINE = InnoDB;
 
 
@@ -680,6 +785,60 @@ CREATE TABLE leave_requests (
 ) ENGINE = InnoDB;
 
 
+-- =====================================================================
+-- 13A. LEAVE_REQUEST_DAYS
+-- =====================================================================
+
+CREATE TABLE leave_request_days (
+    leave_request_day_id BIGINT UNSIGNED AUTO_INCREMENT,
+    leave_request_id BIGINT UNSIGNED NOT NULL,
+    leave_date DATE NOT NULL,
+    day_fraction DECIMAL(4,2) NOT NULL,
+
+    CONSTRAINT pk_leave_request_days
+        PRIMARY KEY (leave_request_day_id),
+    CONSTRAINT uq_leave_request_day
+        UNIQUE (leave_request_id, leave_date),
+    CONSTRAINT chk_leave_request_day_fraction
+        CHECK (day_fraction >= 0.01 AND day_fraction <= 1.00),
+    CONSTRAINT fk_leave_request_day_request
+        FOREIGN KEY (leave_request_id)
+        REFERENCES leave_requests(leave_request_id)
+        ON DELETE CASCADE
+        ON UPDATE RESTRICT
+) ENGINE = InnoDB;
+
+
+-- =====================================================================
+-- 13B. WORKFORCE_OVERTIME_POLICY_VERSIONS
+-- =====================================================================
+
+CREATE TABLE workforce_overtime_policy_versions (
+    workforce_overtime_policy_version_id BIGINT UNSIGNED AUTO_INCREMENT,
+    version_number INT UNSIGNED NOT NULL,
+    effective_from DATE NOT NULL,
+    effective_to DATE NULL,
+    non_working_multiplier DECIMAL(8,4) NOT NULL,
+    created_by_user_id BIGINT UNSIGNED NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT pk_workforce_overtime_policy_versions
+        PRIMARY KEY (workforce_overtime_policy_version_id),
+    CONSTRAINT uq_workforce_overtime_policy_version
+        UNIQUE (version_number),
+    CONSTRAINT chk_workforce_overtime_policy_dates
+        CHECK (effective_to IS NULL OR effective_to >= effective_from),
+    CONSTRAINT chk_workforce_overtime_non_working_multiplier
+        CHECK (non_working_multiplier >= 0),
+    CONSTRAINT fk_workforce_overtime_policy_creator
+        FOREIGN KEY (created_by_user_id)
+        REFERENCES users(user_id)
+        ON DELETE RESTRICT
+        ON UPDATE RESTRICT,
+    INDEX idx_workforce_overtime_policy_dates (effective_from, effective_to)
+) ENGINE = InnoDB;
+
+
 
 -- =====================================================================
 -- DOMAIN D — COMPENSATION MANAGEMENT
@@ -819,6 +978,8 @@ CREATE TABLE salary_revision_components (
 
     calculation_type VARCHAR(20) NOT NULL,
 
+    is_overtime_base BOOLEAN NOT NULL DEFAULT FALSE,
+
     fixed_amount DECIMAL(15,2) NULL,
     percentage_value DECIMAL(8,4) NULL,
 
@@ -837,6 +998,9 @@ CREATE TABLE salary_revision_components (
                 'PERCENTAGE'
             )
         ),
+
+    CONSTRAINT chk_salary_overtime_base_boolean
+        CHECK (is_overtime_base IN (0, 1)),
 
     CONSTRAINT chk_salary_component_calculation
         CHECK (
@@ -960,6 +1124,8 @@ CREATE TABLE payroll_runs (
     initiated_by_user_id BIGINT UNSIGNED NOT NULL,
 
     started_at DATETIME NULL,
+    attempt_number BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    attempt_lease_expires_at DATETIME(6) NULL,
     completed_at DATETIME NULL,
     finalized_at DATETIME NULL,
 
@@ -1002,7 +1168,43 @@ CREATE TABLE payroll_runs (
 
 
 -- =====================================================================
--- 20. PAYROLL_RESULTS
+-- 20. PAYROLL_RUN_WORKFORCE_SNAPSHOTS
+-- =====================================================================
+
+CREATE TABLE payroll_run_workforce_snapshots (
+    payroll_run_id BIGINT UNSIGNED NOT NULL,
+    employee_id BIGINT UNSIGNED NOT NULL,
+    attempt_number BIGINT UNSIGNED NOT NULL,
+    snapshot_at DATETIME(6) NOT NULL,
+    snapshot JSON NOT NULL,
+
+    CONSTRAINT pk_payroll_run_workforce_snapshots
+        PRIMARY KEY (
+            payroll_run_id,
+            employee_id
+        ),
+
+    CONSTRAINT fk_payroll_workforce_snapshot_run
+        FOREIGN KEY (payroll_run_id)
+        REFERENCES payroll_runs(payroll_run_id)
+        ON DELETE RESTRICT
+        ON UPDATE RESTRICT,
+
+    CONSTRAINT fk_payroll_workforce_snapshot_employee
+        FOREIGN KEY (employee_id)
+        REFERENCES employees(employee_id)
+        ON DELETE RESTRICT
+        ON UPDATE RESTRICT,
+
+    INDEX idx_payroll_run_workforce_snapshots_attempt (
+        payroll_run_id,
+        attempt_number
+    )
+) ENGINE = InnoDB;
+
+
+-- =====================================================================
+-- 21. PAYROLL_RESULTS
 -- =====================================================================
 
 CREATE TABLE payroll_results (
@@ -1015,6 +1217,8 @@ CREATE TABLE payroll_results (
     gross_earnings DECIMAL(15,2) NOT NULL,
     total_deductions DECIMAL(15,2) NOT NULL,
     net_salary DECIMAL(15,2) NOT NULL,
+
+    workforce_calculation_snapshot JSON NULL,
 
     processed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -1071,7 +1275,7 @@ CREATE TABLE payroll_results (
 
 
 -- =====================================================================
--- 21. PAYROLL_RESULT_COMPONENTS
+-- 22. PAYROLL_RESULT_COMPONENTS
 -- =====================================================================
 
 CREATE TABLE payroll_result_components (
@@ -1127,7 +1331,7 @@ CREATE TABLE payroll_result_components (
 
 
 -- =====================================================================
--- 22. PAYROLL_PROCESSING_ISSUES
+-- 23. PAYROLL_PROCESSING_ISSUES
 -- =====================================================================
 
 CREATE TABLE payroll_processing_issues (
@@ -1192,7 +1396,7 @@ CREATE TABLE payroll_processing_issues (
 
 
 -- =====================================================================
--- 23. PAYSLIPS
+-- 24. PAYSLIPS
 -- =====================================================================
 
 CREATE TABLE payslips (
@@ -1237,7 +1441,7 @@ CREATE TABLE payslips (
 
 
 -- =====================================================================
--- 24. AUDIT_EVENTS
+-- 25. AUDIT_EVENTS
 -- =====================================================================
 
 CREATE TABLE audit_events (
@@ -1288,7 +1492,7 @@ CREATE TABLE audit_events (
 
 
 -- =====================================================================
--- 25. AUDIT_EVENT_CHANGES
+-- 26. AUDIT_EVENT_CHANGES
 -- =====================================================================
 
 CREATE TABLE audit_event_changes (
@@ -1323,7 +1527,7 @@ CREATE TABLE audit_event_changes (
 
 
 -- =====================================================================
--- 26. SECURITY_EVENTS
+-- 27. SECURITY_EVENTS
 -- =====================================================================
 
 CREATE TABLE security_events (
@@ -1418,7 +1622,7 @@ CREATE TABLE security_events (
 
 
 -- =====================================================================
--- 27. SYSTEM_SETTINGS
+-- 28. SYSTEM_SETTINGS
 -- =====================================================================
 
 CREATE TABLE system_settings (

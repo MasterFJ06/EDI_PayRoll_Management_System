@@ -1,5 +1,6 @@
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -28,11 +29,12 @@ def make_uow() -> MagicMock:
     uow = MagicMock()
     uow.salary_structures.get_by_id.return_value = object()
     uow.salary_structures.get_by_code.return_value = None
-    uow.salary_components.get_by_id.return_value = object()
+    uow.salary_components.get_by_id.return_value = SimpleNamespace(component_type="EARNING")
     uow.salary_components.get_by_code.return_value = None
     uow.salary_revisions.get_by_id.return_value = object()
     uow.salary_revisions.get_by_structure_and_number.return_value = None
     uow.salary_revision_components.get_by_revision_and_component.return_value = None
+    uow.salary_revision_components.get_by_revision.return_value = []
     uow.employees.get_by_id.return_value = object()
     uow.salary_structures.add.side_effect = lambda model: setattr(model, "salary_structure_id", 1)
     uow.salary_components.add.side_effect = lambda model: setattr(model, "salary_component_id", 2)
@@ -55,7 +57,7 @@ def make_uow() -> MagicMock:
         ),
         (
             SalaryRevisionComponentCreateRequest,
-            {"salary_revision_id", "salary_component_id", "calculation_type"},
+            {"salary_revision_id", "salary_component_id", "calculation_type", "is_overtime_base"},
         ),
         (
             EmployeeSalaryAssignmentCreateRequest,
@@ -172,13 +174,49 @@ def test_create_fixed_salary_revision_component_commits() -> None:
             salary_component_id=2,
             calculation_type="FIXED",
             fixed_amount=Decimal("5000.00"),
+            is_overtime_base=False,
         )
     )
 
     assert result.salary_revision_id == 3
     assert result.fixed_amount == Decimal("5000.00")
+    assert result.is_overtime_base is False
     uow.salary_revision_components.add.assert_called_once()
     uow.commit.assert_called_once()
+
+
+def test_designated_ot_base_requires_fixed_earning() -> None:
+    uow = make_uow()
+    result = SalaryRevisionComponentService(uow).create(
+        SalaryRevisionComponentCreateRequest(
+            salary_revision_id=3, salary_component_id=2, calculation_type="FIXED",
+            fixed_amount=Decimal("5000.00"), is_overtime_base=True,
+        )
+    )
+    assert result.is_overtime_base is True
+    assert uow.salary_revision_components.add.call_args.args[0].is_overtime_base is True
+
+    uow = make_uow()
+    uow.salary_components.get_by_id.return_value = SimpleNamespace(component_type="DEDUCTION")
+    with pytest.raises(BusinessRuleViolation, match="FIXED EARNING"):
+        SalaryRevisionComponentService(uow).create(
+            SalaryRevisionComponentCreateRequest(
+                salary_revision_id=3, salary_component_id=2, calculation_type="FIXED",
+                fixed_amount=Decimal("5000.00"), is_overtime_base=True,
+            )
+        )
+
+
+def test_revision_cannot_designate_two_ot_base_components() -> None:
+    uow = make_uow()
+    uow.salary_revision_components.get_by_revision.return_value = [SimpleNamespace(is_overtime_base=True)]
+    with pytest.raises(BusinessRuleViolation, match="only one overtime base"):
+        SalaryRevisionComponentService(uow).create(
+            SalaryRevisionComponentCreateRequest(
+                salary_revision_id=3, salary_component_id=2, calculation_type="FIXED",
+                fixed_amount=Decimal("5000.00"), is_overtime_base=True,
+            )
+        )
 
 
 def test_create_percentage_salary_revision_component_validates_base_component() -> None:
@@ -190,6 +228,7 @@ def test_create_percentage_salary_revision_component_validates_base_component() 
             calculation_type="PERCENTAGE",
             percentage_value=Decimal("10.0000"),
             base_component_id=4,
+            is_overtime_base=False,
         )
     )
 
@@ -211,6 +250,7 @@ def test_create_salary_revision_component_rejects_failures_without_commit(
         "salary_component_id": 2,
         "calculation_type": "FIXED",
         "fixed_amount": Decimal("500.00"),
+        "is_overtime_base": False,
     }
     if failure == "missing_revision":
         uow.salary_revisions.get_by_id.return_value = None
@@ -223,6 +263,7 @@ def test_create_salary_revision_component_rejects_failures_without_commit(
             "calculation_type": "PERCENTAGE",
             "percentage_value": Decimal("10.0000"),
             "base_component_id": 4,
+            "is_overtime_base": False,
         }
         uow.salary_components.get_by_id.side_effect = [object(), None]
     elif failure == "duplicate":
@@ -233,6 +274,7 @@ def test_create_salary_revision_component_rejects_failures_without_commit(
             "salary_component_id": 2,
             "calculation_type": "FIXED",
             "percentage_value": Decimal("10.0000"),
+            "is_overtime_base": False,
         }
 
     with pytest.raises(BusinessRuleViolation):

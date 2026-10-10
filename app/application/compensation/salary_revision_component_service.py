@@ -19,7 +19,8 @@ class SalaryRevisionComponentService:
     ) -> SalaryRevisionComponentResponse:
         if self.uow.salary_revisions.get_by_id(request.salary_revision_id) is None:
             raise BusinessRuleViolation("Salary revision does not exist.")
-        if self.uow.salary_components.get_by_id(request.salary_component_id) is None:
+        salary_component = self.uow.salary_components.get_by_id(request.salary_component_id)
+        if salary_component is None:
             raise BusinessRuleViolation("Salary component does not exist.")
         if request.base_component_id is not None and self.uow.salary_components.get_by_id(
             request.base_component_id
@@ -29,6 +30,11 @@ class SalaryRevisionComponentService:
             request.salary_revision_id, request.salary_component_id
         ) is not None:
             raise BusinessRuleViolation("Salary component is already included in this revision.")
+        if request.is_overtime_base and any(
+            item.is_overtime_base
+            for item in self.uow.salary_revision_components.get_by_revision(request.salary_revision_id)
+        ):
+            raise BusinessRuleViolation("A salary revision can designate only one overtime base component.")
         component = SalaryRevisionComponent(
             salary_revision_id=request.salary_revision_id,
             salary_component_id=request.salary_component_id,
@@ -36,6 +42,8 @@ class SalaryRevisionComponentService:
             fixed_amount=request.fixed_amount,
             percentage_value=request.percentage_value,
             base_component_id=request.base_component_id,
+            is_overtime_base=request.is_overtime_base,
+            component_type=salary_component.component_type,
         )
         model = SalaryRevisionComponentModel(
             salary_revision_id=component.salary_revision_id,
@@ -44,6 +52,7 @@ class SalaryRevisionComponentService:
             fixed_amount=component.fixed_amount,
             percentage_value=component.percentage_value,
             base_component_id=component.base_component_id,
+            is_overtime_base=component.is_overtime_base,
         )
         self.uow.salary_revision_components.add(model)
         self.uow.commit()
@@ -54,4 +63,5 @@ class SalaryRevisionComponentService:
             fixed_amount=model.fixed_amount,
             percentage_value=model.percentage_value,
             base_component_id=model.base_component_id,
+            is_overtime_base=model.is_overtime_base,
         )

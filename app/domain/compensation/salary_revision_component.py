@@ -17,6 +17,8 @@ class SalaryRevisionComponent(Entity[tuple[int, int]]):
         fixed_amount: Decimal | None = None,
         percentage_value: Decimal | None = None,
         base_component_id: int | None = None,
+        is_overtime_base: bool = False,
+        component_type: str | None = None,
     ) -> None:
         if salary_revision_id <= 0 or salary_component_id <= 0:
             raise BusinessRuleViolation("Salary revision and component IDs must be positive.")
@@ -35,6 +37,8 @@ class SalaryRevisionComponent(Entity[tuple[int, int]]):
             raise BusinessRuleViolation("Base component ID must be positive.")
         if base_component_id == salary_component_id:
             raise BusinessRuleViolation("A salary component cannot be its own base component.")
+        if is_overtime_base and (normalized_type != self.FIXED or (component_type or "").upper() != "EARNING"):
+            raise BusinessRuleViolation("An overtime base must be a FIXED EARNING component.")
         super().__init__((salary_revision_id, salary_component_id))
         self.salary_revision_id = salary_revision_id
         self.salary_component_id = salary_component_id
@@ -42,3 +46,4 @@ class SalaryRevisionComponent(Entity[tuple[int, int]]):
         self.fixed_amount = amount
         self.percentage_value = percentage
         self.base_component_id = base_component_id
+        self.is_overtime_base = is_overtime_base

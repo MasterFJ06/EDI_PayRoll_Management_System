@@ -9,6 +9,7 @@ class LeaveType(Entity[int | None]):
         leave_type_code: str,
         leave_type_name: str,
         description: str | None = None,
+        payroll_treatment: str | None = None,
         is_active: bool = True,
     ) -> None:
         code = leave_type_code.strip()
@@ -24,8 +25,12 @@ class LeaveType(Entity[int | None]):
         normalized_description = description.strip() if description is not None else None
         if normalized_description is not None and len(normalized_description) > 500:
             raise BusinessRuleViolation("Leave type description cannot exceed 500 characters.")
+        treatment = payroll_treatment.strip().upper() if payroll_treatment is not None else ""
+        if treatment not in {"PAID", "UNPAID"}:
+            raise BusinessRuleViolation("Leave type payroll treatment must be PAID or UNPAID.")
         super().__init__(leave_type_id)
         self.leave_type_code = code
         self.leave_type_name = name
         self.description = normalized_description
+        self.payroll_treatment = treatment
         self.is_active = is_active

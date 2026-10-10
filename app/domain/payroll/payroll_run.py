@@ -22,6 +22,8 @@ class PayrollRun(Entity[int | None]):
         started_at: datetime | None = None,
         completed_at: datetime | None = None,
         finalized_at: datetime | None = None,
+        attempt_number: int = 0,
+        attempt_lease_expires_at: datetime | None = None,
     ) -> None:
         if not 0 <= payroll_year <= 65535:
             raise BusinessRuleViolation("Payroll year must fit SMALLINT UNSIGNED.")
@@ -40,3 +42,5 @@ class PayrollRun(Entity[int | None]):
         self.started_at = started_at
         self.completed_at = completed_at
         self.finalized_at = finalized_at
+        self.attempt_number = attempt_number
+        self.attempt_lease_expires_at = attempt_lease_expires_at

@@ -172,6 +172,7 @@ def revision_component_payload(**overrides) -> dict[str, object]:
         "salary_component_id": 1,
         "calculation_type": "FIXED",
         "fixed_amount": "1000.00",
+        "is_overtime_base": False,
         **overrides,
     }
 
@@ -308,6 +309,7 @@ def test_create_salary_revision_component(client, fake_uow):
         "fixed_amount": "1000.00",
         "percentage_value": None,
         "base_component_id": None,
+        "is_overtime_base": False,
     }
     assert fake_uow.committed is True
 

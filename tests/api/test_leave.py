@@ -1,9 +1,11 @@
+from datetime import date
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api.dependencies.unit_of_work import get_unit_of_work
+from app.domain.organization.work_calendar import WeeklyRule, WorkCalendarVersion
 from app.infrastructure.security.jwt import create_access_token
 from app.main import app
 
@@ -13,6 +15,12 @@ class FakeEmployeeRepository:
         if employee_id in {5, 8}:
             return SimpleNamespace(employee_id=employee_id)
         return None
+
+    def get_by_user_id(self, user_id):
+        return SimpleNamespace(employee_id=8, user_id=user_id) if user_id == 1 else None
+
+    def get_by_id_for_update(self, employee_id):
+        return self.get_by_id(employee_id)
 
 
 class FakeUserRepository:
@@ -74,6 +82,7 @@ class FakeLeaveBalanceRepository:
 class FakeLeaveRequestRepository:
     def __init__(self):
         self.leave_requests = []
+        self.days = {}
 
     def get_by_id(self, leave_request_id):
         return next(
@@ -86,6 +95,57 @@ class FakeLeaveRequestRepository:
         self.leave_requests.append(request)
         return request
 
+    def add_days(self, leave_request_id, days):
+        self.days[leave_request_id] = [
+            SimpleNamespace(leave_date=day.leave_date, day_fraction=day.day_fraction)
+            for day in days
+        ]
+
+    def get_days(self, leave_request_id):
+        return self.days.get(leave_request_id, [])
+
+    def find_approved_conflicts(self, employee_id, leave_dates, excluding_request_id):
+        dates = []
+        for request in self.leave_requests:
+            if request.leave_request_id == excluding_request_id:
+                continue
+            if request.employee_id == employee_id and request.status == "APPROVED":
+                dates.extend(
+                    day.leave_date
+                    for day in self.days.get(request.leave_request_id, [])
+                    if day.leave_date in leave_dates
+                )
+        return dates
+
+    def transition_status(
+        self, leave_request_id, expected_status, target_status,
+        reviewed_by_employee_id=None, reviewed_at=None, review_comment=None
+    ):
+        request = self.get_by_id(leave_request_id)
+        if request is None or request.status != expected_status:
+            return False
+        request.status = target_status
+        if target_status in {"APPROVED", "REJECTED"}:
+            request.reviewed_by_employee_id = reviewed_by_employee_id
+            request.reviewed_at = reviewed_at
+            request.review_comment = review_comment
+        return True
+
+
+class FakeWorkCalendarRepository:
+    def __init__(self):
+        self.version = WorkCalendarVersion(
+            1, date(2026, 1, 1), date(2026, 12, 31), "UTC", 1,
+            tuple(WeeklyRule(day, "WORKING_DAY", 480) for day in range(1, 8)),
+            version_id=1,
+        )
+
+    def get_applicable(self, day):
+        return self.version if self.version.applies_on(day) else None
+
+    def get_override(self, version_id, day):
+        return None
+
 
 class FakeUnitOfWork:
     def __init__(self):
@@ -94,6 +154,12 @@ class FakeUnitOfWork:
         self.leave_types = FakeLeaveTypeRepository()
         self.leave_balances = FakeLeaveBalanceRepository()
         self.leave_requests = FakeLeaveRequestRepository()
+        self.work_calendars = FakeWorkCalendarRepository()
+        self.permissions_allowed = True
+        self.authorization = SimpleNamespace(
+            has_permission=lambda *args: self.permissions_allowed
+        )
+        self.audit_events = SimpleNamespace(add=lambda *args: None)
         self.committed = False
 
     def __enter__(self):
@@ -132,6 +198,7 @@ def leave_type_payload(**overrides):
         "leave_type_code": "ANNUAL",
         "leave_type_name": "Annual Leave",
         "description": "Paid annual leave",
+        "payroll_treatment": "PAID",
         "is_active": True,
         **overrides,
     }
@@ -156,6 +223,10 @@ def leave_request_payload(**overrides):
         "end_date": "2026-10-11",
         "requested_days": "2.00",
         "reason": "Personal leave",
+        "allocations": [
+            {"leave_date": "2026-10-10", "day_fraction": "1.00"},
+            {"leave_date": "2026-10-11", "day_fraction": "1.00"},
+        ],
         **overrides,
     }
 
@@ -166,6 +237,7 @@ def seed_leave_type(uow: FakeUnitOfWork) -> None:
             leave_type_id=1,
             leave_type_code="ANNUAL",
             leave_type_name="Annual Leave",
+            payroll_treatment="PAID",
         )
     )
 
@@ -194,6 +266,7 @@ def test_create_leave_type(client, fake_uow):
     assert response.status_code == 201
     assert response.json()["leave_type_id"] == 1
     assert response.json()["leave_type_code"] == "ANNUAL"
+    assert response.json()["payroll_treatment"] == "PAID"
     assert fake_uow.committed is True
 
 
@@ -306,7 +379,117 @@ def test_create_leave_request(client, fake_uow):
     assert response.json()["leave_request_id"] == 1
     assert response.json()["status"] == "PENDING"
     assert response.json()["requested_days"] == "2.00"
+    assert len(response.json()["allocations"]) == 2
     assert fake_uow.committed is True
+
+
+def test_approve_leave_request(client, fake_uow):
+    seed_leave_type(fake_uow)
+    created = client.post(
+        "/api/v1/leave-requests",
+        json=leave_request_payload(),
+        headers=authenticated_headers(),
+    )
+    response = client.post(
+        f"/api/v1/leave-requests/{created.json()['leave_request_id']}/approve",
+        headers=authenticated_headers(),
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "APPROVED"
+    assert response.json()["reviewed_by_employee_id"] == 8
+
+    second_approval = client.post(
+        f"/api/v1/leave-requests/{created.json()['leave_request_id']}/approve",
+        headers=authenticated_headers(),
+    )
+    assert second_approval.status_code == 409
+
+
+def test_reject_and_cancel_leave_request(client, fake_uow):
+    seed_leave_type(fake_uow)
+    created = client.post(
+        "/api/v1/leave-requests",
+        json=leave_request_payload(),
+        headers=authenticated_headers(),
+    )
+    request_id = created.json()["leave_request_id"]
+    rejected = client.post(
+        f"/api/v1/leave-requests/{request_id}/reject",
+        json={"review_comment": "Not approved"},
+        headers=authenticated_headers(),
+    )
+    assert rejected.status_code == 200
+    assert rejected.json()["status"] == "REJECTED"
+
+    created_again = client.post(
+        "/api/v1/leave-requests",
+        json=leave_request_payload(leave_type_id=1),
+        headers=authenticated_headers(),
+    )
+    cancelled = client.post(
+        f"/api/v1/leave-requests/{created_again.json()['leave_request_id']}/cancel",
+        headers=authenticated_headers(),
+    )
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "CANCELLED"
+
+
+@pytest.mark.parametrize("operation", ["approve", "reject", "cancel"])
+def test_lifecycle_endpoints_require_authentication(client, fake_uow, operation):
+    response = client.post(f"/api/v1/leave-requests/1/{operation}")
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize("operation", ["approve", "reject", "cancel"])
+def test_lifecycle_endpoints_enforce_operation_permission(client, fake_uow, operation):
+    fake_uow.permissions_allowed = False
+    response = client.post(
+        f"/api/v1/leave-requests/1/{operation}",
+        headers=authenticated_headers(),
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("operation", ["approve", "reject", "cancel"])
+def test_lifecycle_endpoints_return_404_for_missing_request(client, fake_uow, operation):
+    response = client.post(
+        f"/api/v1/leave-requests/999/{operation}",
+        headers=authenticated_headers(),
+    )
+    assert response.status_code == 404
+
+
+def test_create_leave_type_requires_manage_permission(client, fake_uow):
+    fake_uow.permissions_allowed = False
+    response = client.post(
+        "/api/v1/leave-types",
+        json=leave_type_payload(),
+        headers=authenticated_headers(),
+    )
+    assert response.status_code == 403
+
+
+def test_approval_rejects_existing_approved_date_overlap(client, fake_uow):
+    seed_leave_type(fake_uow)
+    first = client.post(
+        "/api/v1/leave-requests", json=leave_request_payload(),
+        headers=authenticated_headers(),
+    )
+    assert client.post(
+        f"/api/v1/leave-requests/{first.json()['leave_request_id']}/approve",
+        headers=authenticated_headers(),
+    ).status_code == 200
+
+    second = client.post(
+        "/api/v1/leave-requests", json=leave_request_payload(),
+        headers=authenticated_headers(),
+    )
+    assert second.status_code == 201  # overlapping pending requests are allowed
+    conflict = client.post(
+        f"/api/v1/leave-requests/{second.json()['leave_request_id']}/approve",
+        headers=authenticated_headers(),
+    )
+    assert conflict.status_code == 409
 
 
 @pytest.mark.parametrize(
@@ -341,13 +524,7 @@ def test_create_leave_request_rejects_invalid_date_range(client, fake_uow):
     assert "end date cannot precede start date" in response.json()["detail"]
 
 
-@pytest.mark.parametrize(
-    "changes",
-    [
-        {"requested_days": "0.00"},
-        {"status": "NOT_A_STATUS"},
-    ],
-)
+@pytest.mark.parametrize("changes", [{"requested_days": "0.00"}, {"status": "NOT_A_STATUS"}])
 def test_create_leave_request_rejects_invalid_schema_values(client, fake_uow, changes):
     response = client.post(
         "/api/v1/leave-requests",
@@ -358,7 +535,7 @@ def test_create_leave_request_rejects_invalid_schema_values(client, fake_uow, ch
     assert response.status_code == 422
 
 
-def test_create_leave_request_rejects_inconsistent_review_fields(client, fake_uow):
+def test_create_leave_request_rejects_client_controlled_status(client, fake_uow):
     seed_leave_type(fake_uow)
     response = client.post(
         "/api/v1/leave-requests",
@@ -366,11 +543,10 @@ def test_create_leave_request_rejects_inconsistent_review_fields(client, fake_uo
         headers=authenticated_headers(),
     )
 
-    assert response.status_code == 409
-    assert "require reviewer and review time" in response.json()["detail"]
+    assert response.status_code == 422
 
 
-def test_create_leave_request_rejects_missing_reviewer_employee(client, fake_uow):
+def test_create_leave_request_rejects_client_controlled_reviewer(client, fake_uow):
     seed_leave_type(fake_uow)
     response = client.post(
         "/api/v1/leave-requests",
@@ -382,8 +558,7 @@ def test_create_leave_request_rejects_missing_reviewer_employee(client, fake_uow
         headers=authenticated_headers(),
     )
 
-    assert response.status_code == 409
-    assert "Reviewer employee does not exist" in response.json()["detail"]
+    assert response.status_code == 422
 
 
 def test_leave_routes_appear_in_generated_openapi(client):

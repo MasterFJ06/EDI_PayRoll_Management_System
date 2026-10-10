@@ -15,6 +15,23 @@ def test_payroll_run_accepts_schema_status_values_and_period() -> None:
     run = PayrollRun(None, 65535, 12, 1, status="created")
     assert run.status == PayrollRun.CREATED
     assert run.payroll_year == 65535
+    assert run.attempt_number == 0
+    assert run.attempt_lease_expires_at is None
+
+
+def test_payroll_run_represents_attempt_foundation_values() -> None:
+    lease_expires_at = datetime(2026, 10, 7, 9, 30)
+    run = PayrollRun(
+        None,
+        2026,
+        10,
+        1,
+        attempt_number=3,
+        attempt_lease_expires_at=lease_expires_at,
+    )
+
+    assert run.attempt_number == 3
+    assert run.attempt_lease_expires_at == lease_expires_at
 
 
 @pytest.mark.parametrize(

@@ -283,8 +283,8 @@ Implemented:
   `started_at` timestamp
 - rejection of duplicate or invalid-state claims with HTTP 409; missing runs return
   HTTP 404
-- application-level orchestration boundary with no payroll calculation or generated
-  payroll artifacts
+- application-level orchestration boundary; employee eligibility is implemented in
+  Phase 2B-2 below, with no payroll calculation or generated payroll artifacts
 - atomic `PROCESSING` to `FAILED` transition and audit event when an unexpected
   orchestration failure occurs
 - processing-started and processing-failed events recorded through ORM mappings for
@@ -301,6 +301,31 @@ Verification:
 - 356 full-suite tests passed
 - Live MySQL smoke test was not performed; the RBAC seed does not assign a user the
   `Payroll Administrator` role, and no development privilege assignment was made.
+
+---
+
+## Payroll Management — Phase 2B-2 (Employee Eligibility)
+
+Status: IMPLEMENTED (AUTOMATED VALIDATION)
+
+Implemented deterministic internal classification of Employee records against the
+calendar month of a Payroll Run. The resolver uses `joining_date` and nullable
+`employment_end_date` with inclusive interval overlap, and captures the applicable
+employment portion for eligible employee IDs. Non-overlapping employees are explicitly
+listed as excluded. The existing Employee repository returns records ordered by
+employee ID.
+
+The processing endpoint still returns only the Payroll Run response with status
+`PROCESSING`. This phase does not use employment status or employment history for
+eligibility and does not add compensation, proration, workforce, QA, result, issue,
+retry, finalization, or payslip behavior. An empty population is returned as an empty
+eligibility result and does not itself change run state or create an issue.
+
+Verification:
+
+- 83 Payroll-focused tests passed
+- 382 full-suite tests passed
+- One existing Starlette/httpx test-client deprecation warning remains
 
 ---
 
@@ -360,4 +385,278 @@ Remote repository:
 
 # Next Phase
 
-Compensation / Salary Management Phase 2 is complete. Payroll Phase 1 core backend layers and Phase 2A Payroll Run creation/retrieval are implemented. Payroll processing behaviors that require further authoritative contracts remain for later phases.
+Compensation / Salary Management Phase 2 and Payroll Phases 1, 2A, 2B-1, 2B-2,
+and 2B-3 are implemented. Period segmentation, calculation, and later processing
+stages remain unimplemented.
+
+---
+
+## Employee Employment Interval — Decision 12A Prerequisite
+
+Status: IMPLEMENTED
+
+Implemented nullable `employees.employment_end_date` as an inclusive employment end
+date, with `joining_date` as the inclusive start. Open-ended intervals use a null end
+date; same-day intervals are valid; an end before the start is rejected by the Employee
+domain model. Current `employment_status` remains independent, and `employment_history`
+continues to represent organizational assignment history. Decision 12A established the
+employment data model; Payroll eligibility was implemented separately in Phase 2B-2.
+
+The authoritative `database/schema.sql` is updated. The repository has an Alembic
+configuration but no existing revision files or migration history; schema changes are
+maintained directly in the authoritative SQL file, so no migration revision was added.
+
+Verification: 55 focused Employee domain, service, API, and ORM tests passed; 365 full
+suite tests passed. The existing Starlette/httpx test-client deprecation warning
+remains.
+
+---
+
+## Payroll Management — Phase 2B-3 (Compensation Snapshot)
+
+Status: IMPLEMENTED (AUTOMATED VALIDATION)
+
+After the atomic `CREATED` to `PROCESSING` claim is committed, processing reloads
+the Payroll Run and uses its persisted `started_at` timestamp as the compensation
+snapshot boundary. Only employees eligible under Phase 2B-2 are considered.
+Applicable assignments and their directly referenced revisions use inclusive
+effective-date intervals. Zero or overlapping assignments, missing or ineffective
+referenced revisions, and existing-domain-detected invalid component configuration
+create OPEN Payroll Processing Issues. OPEN issues are blocking. The immutable
+snapshot copies assignment, revision, and component configuration into frozen
+application dataclasses.
+
+This phase does not calculate salary amounts, prorate or segment compensation,
+integrate attendance/leave/overtime, create Payroll Results, complete the Payroll
+Run, retry, or finalize it. It adds no schema, migration, public endpoint, or API
+response fields.
+
+Verification:
+
+- 26 focused snapshot, repository, orchestrator, and process API tests passed
+- 92 Payroll-focused tests passed
+- 95 Compensation-focused tests passed
+- 395 full-suite tests passed
+- One existing Starlette/httpx test-client deprecation warning remains
+
+---
+
+## Payroll Management — Phase 2B-4 (Period Segmentation)
+
+Status: IMPLEMENTED (AUTOMATED VALIDATION)
+
+The segmentation stage consumes the Phase 2B-2 eligible employee ranges and
+Phase 2B-3 compensation snapshot. For each employee with a valid 2B-3 snapshot,
+it intersects the employment processing range with each employee salary
+assignment and its directly referenced salary revision effective interval.
+Inclusive interval boundaries are swept into ordered, non-overlapping segments.
+Compensation overlaps, gaps, missing referenced revisions, and invalid component
+configuration create OPEN Payroll Processing Issues; no precedence or carry-forward
+is applied. Employees already excluded by 2B-2 do not reach segmentation.
+
+No working-day, calendar-payable-day, proration, or salary calculation is performed.
+No Payroll Results, segment table, schema change, API endpoint, or response fields
+were added. Runs remain in PROCESSING.
+
+Verification:
+
+- 42 focused segmentation, snapshot, repository, orchestrator, and API tests passed
+- 110 Payroll-focused tests passed
+- 95 Compensation-focused tests passed
+- 411 full-suite tests passed
+- One existing Starlette/httpx test-client deprecation warning remains
+
+---
+
+## Workforce Architecture — Phase 1 (Schema & Migration Foundation)
+
+Status: IMPLEMENTED; EXISTING-DATA BACKFILL REQUIRES OWNER APPROVAL
+
+Added the five Workforce foundation tables and the three approved columns for
+Leave Type payroll treatment, Salary Revision OT-base designation, and nullable
+Payroll Result Workforce snapshot JSON. The existing Leave Type create contract
+now requires an explicit `PAID` or `UNPAID` treatment. No treatment is inferred
+from leave names or descriptions. The migration requires an explicit complete
+Leave Type ID-to-treatment mapping when legacy Leave Types exist; it initializes
+the OT-base flag to `FALSE` and does not designate any existing component.
+
+No overtime workflow, leave approval/allocation service, Workforce snapshot
+orchestration, or Payroll 2B-5 behavior is implemented here.
+Payroll Result creation remains valid with a null Workforce snapshot.
+
+## Workforce Architecture — Phase 2 (Work Calendar)
+
+Status: IMPLEMENTED; validation results are recorded with this phase's review.
+
+Implemented the organization-wide immutable Work Calendar version and date
+override workflows, date classification and working-day counting services,
+RBAC permissions, and audit events. Calendar corrections are blocked whenever
+an affected monthly Payroll Run is not `FAILED`. No overtime, leave workflow,
+Workforce snapshot, or Payroll 2B-5 behavior was added.
+
+Verification: 29 focused Work Calendar, Organization, Unit of Work, audit, and
+RBAC tests passed; 449 full-suite tests passed. MySQL smoke testing was not run:
+the local database does not yet contain the three Phase 1 Work Calendar tables.
+
+---
+
+## Workforce Architecture — Phase 3 (Leave Payroll Treatment, Allocation & Lifecycle)
+
+Status: IMPLEMENTED (AUTOMATED VALIDATION)
+
+New Leave Types require explicit `PAID` or `UNPAID` treatment and creation is
+audited. The existing development Leave Type ID 1 remains unresolved and is
+blocked from approval until its treatment is known. Payroll-reference
+immutability for Leave Type treatment is deferred until the authoritative
+Payroll/Workforce reference contract exists; no Payroll reference was invented.
+
+Leave Requests are created only in `PENDING` with required per-date Decimal
+allocations. Dates must fall inside the inclusive request period and classify as
+`WORKING_DAY` under the existing Work Calendar. Allocation totals must equal the
+request aggregate exactly. Approval validates treatment and allocations,
+serializes by locking the Employee row, prevents approved employee/date overlap,
+transitions status conditionally, and audits in the same Unit of Work. Rejection
+and cancellation use the same transactional state/audit pattern. Cross-month
+allocations are retained per date without Payroll consumption.
+
+Verification:
+
+- 108 focused Leave domain, application, API, and repository tests passed
+- 210 affected Leave, Work Calendar, RBAC/auth, audit, and Payroll regression tests passed
+- 495 full-suite tests passed
+- One existing Starlette/httpx test-client deprecation warning remains
+- Disposable MySQL validation was not run: the configured `payroll_app` account
+  lacks `CREATE DATABASE` privilege, so a disposable database could not be created.
+  No development database data or schema was changed for testing.
+
+The development database contains legacy Leave Type ID 1 and Salary Revision /
+Component IDs 1/1 without authoritative payroll-treatment or OT-base mapping.
+The migration must not be run against that database until the Leave Type mapping
+is approved. No development data has been changed by this phase.
+
+---
+
+## Workforce Architecture — Phase 4 (Decision 29 Overtime)
+
+Status: IMPLEMENTED (AUTOMATED VALIDATION; MYSQL NOT RUN)
+
+Implemented versioned immutable OT policy create/read APIs, effective-date
+resolution, and the two Workforce OT policy permissions. Policy creation uses
+the existing Unit of Work and audit tables. No schema or migration change was
+made. Policy versions cannot overlap. Existing policy rows are not updated;
+the current schema/API has no correction lineage or correction operation.
+
+Added explicit `is_overtime_base` input for new Compensation revision-component
+configuration. The server does not infer legacy designations; a designated base
+must be one FIXED EARNING component, at most one may be designated per revision,
+and OT derivation rejects revisions with zero or multiple valid bases.
+
+Added an internal non-persisting OT derivation service over existing Attendance,
+Work Calendar, policy, and Compensation repositories. It splits worked intervals
+at local midnight, uses the calendar IANA timezone, derives attendance elapsed
+minutes without minute rounding, applies the calendar 480-minute rule and policy
+multiplier, uses full-month Work Calendar working-day counts, resolves date-level
+compensation configuration, and rounds only the final amount to cents using
+ROUND_HALF_UP. Missing/invalid timestamps, excessive duration, and DST-invalid
+local times return nonblocking anomalies. No OT endpoint, fact table, Payroll
+integration, Decision 30, or Payroll 2B-5 behavior was added.
+
+Verification results and the correction limitation are recorded in the Phase 4
+handoff report. The configured database was not modified for testing.
+
+Verification:
+
+- 40 focused OT domain, application, API, and repository tests passed
+- 384 affected OT, Attendance, Work Calendar, Compensation, Leave, RBAC, Audit,
+  and Payroll regression tests passed
+- 537 full-suite tests passed
+- One existing Starlette/httpx test-client deprecation warning remains
+- MySQL validation was not run because the configured application account does
+  not have `CREATE DATABASE` privilege for a disposable test database.
+
+---
+
+## Workforce Architecture — Phase 5 (Payroll Input Contracts and Read Services)
+
+Status: IMPLEMENTED (AUTOMATED VALIDATION; MYSQL NOT RUN)
+
+Added an internal immutable Workforce Payroll Input Reader for inclusive employee
+date ranges. It returns per-date Attendance values and explicit missing-row markers,
+approved per-date Leave allocations with treatment and fractional values, Work
+Calendar classifications/timezones, effective OT policy values, and Compensation
+segments from the shared `CompensationSegmentationResolver` contract. Invalid
+calendar/policy/leave/compensation data and OT-base configuration are returned as
+structured conditions; Attendance timestamp anomalies use the Phase 4 anomaly
+representation and local-time validation. Missing Attendance remains an input
+anomaly and is not converted to a payroll payable fraction here.
+
+The reader is internal and read-only. It does not persist snapshots, Payroll
+Results, Payroll Processing Issues, OT facts, or any other data. No public API,
+schema change, migration, Decision 30 snapshot, or Payroll 2B-5 integration was
+added. The existing Work Calendar service, Attendance repository, Leave repository,
+overtime policy repository, Unit of Work, Phase 4 anomaly detection, and Phase 5A/5A.1
+Compensation contracts are reused.
+
+Verification:
+
+- 36 focused Workforce input, Attendance, and Leave repository tests passed
+- 334 affected Workforce, Attendance, Leave, Work Calendar, Compensation, Payroll,
+  and API
+  regression tests passed
+- 576 full-suite tests passed
+- One existing Starlette/httpx test-client deprecation warning remains
+- `git diff --check` passed; Git reports existing LF-to-CRLF conversion warnings
+- Disposable MySQL validation was not run because the configured `payroll_app`
+  account lacks `CREATE DATABASE` privilege; no development database was modified.
+
+---
+
+## Payroll Architecture — Decisions 17, 24, and 30 Schema Foundation (Phase A)
+
+Status: IMPLEMENTED (PERSISTENCE FOUNDATION; MYSQL MIGRATION CYCLE NOT RUN)
+
+Added the persisted Payroll Run attempt generation and nullable lease-expiration
+fields, plus the Payroll-owned `payroll_run_workforce_snapshots` table with one
+temporary JSON row per Payroll Run and employee. Added the immutable persistence
+contract, repository primitives, and registration in the existing Unit of Work.
+The result snapshot column and financial constraints remain unchanged. No attempt
+claiming, lease behavior, retry, Workforce snapshot materialization, payroll
+calculation, or API behavior was implemented.
+
+Verification:
+
+- 24 focused Payroll domain, persistence foundation, and Unit of Work tests passed
+- 127 Payroll-focused regression tests passed
+- 582 full-suite tests passed
+- One existing Starlette/httpx test-client deprecation warning remains
+- `git diff --check` passed
+- MySQL connectivity was confirmed read-only, but Alembic reported no current
+  revision and the configured account cannot create a disposable database. The
+  migration upgrade/downgrade cycle was not run against the development database.
+
+---
+
+## Payroll Architecture — Workforce Snapshot Materialization (Phase B.5)
+
+Status: IMPLEMENTED (AUTOMATED VALIDATION; LIVE MYSQL NOT RUN)
+
+The Payroll processing flow now establishes a scoped MySQL `REPEATABLE READ`
+consistent snapshot after the claim commit. Eligibility, compensation resolution,
+period segmentation, and Workforce input collection share the same Unit of Work
+Session and connection. A database `CURRENT_TIMESTAMP(6)` is captured within that
+read boundary. Immutable JSON input snapshots and attempt-fenced blocking issues
+are persisted after the read transaction ends. Failed-attempt snapshots remain
+available for the existing B.3 retry cleanup. No Payroll calculation, result,
+component, QA, finalization, payslip, schema, or API behavior was added.
+
+Verification:
+
+- 81 focused Workforce snapshot, reader, orchestrator, repository, and UoW tests passed
+- 474 unit tests passed
+- Full suite did not complete because TestClient tests hang at
+  `tests/api/test_authorization.py::test_permission_dependency_allows_authenticated_user_with_permission`
+  and `tests/api/test_attendance.py::test_create_attendance_requires_authentication`
+- MySQL/MySQL-dialect model and SQL compilation tests passed; live MySQL transaction
+  semantics were not exercised because the sandbox denied the configured local
+  socket connection (`WinError 10013`)
+- `git diff --check` passed

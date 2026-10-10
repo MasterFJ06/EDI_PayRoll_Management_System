@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = Field(default=7, gt=0)
 
     payroll_worker_count: int = Field(default=4, ge=1, le=32)
+    payroll_attempt_lease_seconds: int = Field(default=900, gt=0)
 
     model_config = SettingsConfigDict(
         env_file=".env",

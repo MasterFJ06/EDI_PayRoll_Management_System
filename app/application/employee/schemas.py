@@ -12,6 +12,7 @@ class EmployeeCreateRequest(BaseModel):
     designation_id: int = Field(gt=0)
     manager_employee_id: int | None = Field(default=None, gt=0)
     joining_date: date
+    employment_end_date: date | None = None
 
 
 class EmployeeResponse(BaseModel):
@@ -24,4 +25,5 @@ class EmployeeResponse(BaseModel):
     designation_id: int
     manager_employee_id: int | None
     joining_date: date
+    employment_end_date: date | None
     employment_status: str

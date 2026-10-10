@@ -14,7 +14,7 @@ Do not add, remove, rename, or restructure tables based only on frontend require
 
 # Authoritative Tables
 
-The current EPMS schema contains exactly 27 authoritative tables.
+The current EPMS schema contains exactly 33 authoritative tables.
 
 ## 1. Identity & Access
 
@@ -46,35 +46,44 @@ The current EPMS schema contains exactly 27 authoritative tables.
 11. leave_types
 12. leave_balances
 13. leave_requests
+14. leave_request_days
 
 ---
 
 ## 5. Compensation / Payroll
 
-14. salary_structures
-15. salary_components
-16. salary_revisions
-17. salary_revision_components
-18. employee_salary_assignments
-19. payroll_runs
-20. payroll_results
-21. payroll_result_components
-22. payroll_processing_issues
-23. payslips
+15. salary_structures
+16. salary_components
+17. salary_revisions
+18. salary_revision_components
+19. employee_salary_assignments
+20. payroll_runs
+21. payroll_run_workforce_snapshots
+22. payroll_results
+23. payroll_result_components
+24. payroll_processing_issues
+25. payslips
 
 ---
 
 ## 6. Administration & Governance
 
-24. audit_events
-25. audit_event_changes
-26. security_events
+26. audit_events
+27. audit_event_changes
+28. security_events
 
 ---
 
 ## 7. System Configuration
 
-27. system_settings
+29. system_settings
+
+## 8. Workforce Architecture Foundation
+
+30. work_calendar_versions
+31. work_calendar_weekly_rules
+32. work_calendar_date_overrides
+33. workforce_overtime_policy_versions
 
 ---
 
@@ -118,6 +127,14 @@ connects roles to permissions.
 `employees.manager_employee_id`
 → `employees.employee_id`
 
+`employees.joining_date` is the inclusive employment start date.
+`employees.employment_end_date` is a nullable DATE containing the inclusive end
+date; null means employment is open-ended. When present, it must be on or after
+`joining_date`.
+
+`employment_history` represents organizational assignment history only and does
+not determine employment intervals.
+
 ---
 
 ## Attendance
@@ -143,7 +160,9 @@ Attendance statuses:
 
 `leave_types`
 
-defines available leave categories.
+defines available leave categories and their required `payroll_treatment` (`PAID`
+or `UNPAID`). Treatment is explicit and is never inferred from the name or
+description.
 
 `leave_balances`
 
@@ -152,6 +171,12 @@ stores employee leave balances.
 `leave_requests`
 
 stores employee leave requests.
+
+`leave_request_days` stores unique per-request date allocations as `DECIMAL(4,2)`
+fractions between 0.01 and 1.00. Leave request creation validates unique
+in-period working dates against the Work Calendar and exact Decimal total equality.
+Approval revalidates allocations and prevents approved date overlaps per employee.
+Lifecycle changes and creation are audited transactionally.
 
 The detailed constraints must be taken from `database/schema.sql`.
 
@@ -173,11 +198,23 @@ Employee salary assignments connect employees to applicable salary structures.
 
 `payroll_runs`
 
-represents payroll processing runs.
+represents payroll processing runs and includes the persisted attempt generation
+and nullable processing lease expiration fields. This phase adds only the fields;
+attempt claiming and lease behavior remain future work.
+
+`payroll_run_workforce_snapshots`
+
+stores one temporary JSON Workforce snapshot per Payroll Run and employee for the
+current attempt, tagged with the attempt number and snapshot timestamp. It is a
+Payroll-owned persistence mechanism. Workforce snapshot materialization is
+implemented in Payroll Phase B.5; failed-attempt snapshot cleanup is part of the
+existing B.3 retry reconciliation.
 
 `payroll_results`
 
 represents employee-level payroll results.
+It includes nullable `workforce_calculation_snapshot` JSON so results created
+before Workforce processing exists remain valid.
 
 `payroll_result_components`
 
@@ -218,6 +255,20 @@ stores security-related events.
 `system_settings`
 
 stores system-level settings.
+
+## Workforce Architecture Foundation
+
+`work_calendar_versions` stores versioned organization-wide calendar settings;
+`work_calendar_weekly_rules` defines ISO weekday classifications and fixed
+scheduled minutes; `work_calendar_date_overrides` supports date-specific
+working, non-working, and holiday classifications. Work Calendar application
+services enforce overlap, date/rule validation, immutability, audit, and
+FAILED-only correction checks against monthly Payroll Runs.
+`workforce_overtime_policy_versions` stores effective-dated non-working
+multipliers; its workflow remains future work.
+
+`salary_revision_components.is_overtime_base` is a non-null boolean defaulting
+to `FALSE`. Existing components are not designated automatically.
 
 ---
 

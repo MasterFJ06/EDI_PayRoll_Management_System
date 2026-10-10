@@ -1,0 +1,109 @@
+from __future__ import annotations
+
+import os
+from typing import Iterator
+
+import pytest
+from sqlalchemy import Engine, create_engine, text
+
+from scripts.prepare_mysql_test_schema import prepare_schema_snapshot
+from tests.integration.mysql_support import (
+    MySQLTestConfigurationError,
+    _SCHEMA_PATH,
+    _verify_schema_state,
+    mysql_test_url_from_environment,
+    parse_mysql_test_url,
+)
+
+_EXPECTED_LIVE_TESTS = {
+    "test_processes_and_persists_a_payroll_run",
+    "test_blocking_open_issue_fails_run_without_resolving_issue",
+    "test_qa_issue_and_transition_roll_back_when_audit_write_fails",
+    "test_stale_or_expired_attempt_cannot_complete_qa[stale-attempt]",
+    "test_stale_or_expired_attempt_cannot_complete_qa[expired-lease]",
+}
+
+
+def _strict_mode() -> bool:
+    return os.environ.get("EPMS_REQUIRE_MYSQL_TESTS", "0") == "1"
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """The shared disposable database is deliberately serial-only."""
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        raise pytest.UsageError("MySQL integration tests cannot run under pytest-xdist.")
+    try:
+        workers = config.getoption("numprocesses", default=0)
+    except ValueError:
+        workers = 0
+    if workers not in (None, 0, "0", "no"):
+        raise pytest.UsageError("MySQL integration tests cannot run under pytest-xdist.")
+
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    if not _strict_mode():
+        return
+    collected = {item.nodeid.rsplit("::", 1)[-1] for item in session.items}
+    if collected != _EXPECTED_LIVE_TESTS:
+        missing = sorted(_EXPECTED_LIVE_TESTS - collected)
+        unexpected = sorted(collected - _EXPECTED_LIVE_TESTS)
+        raise pytest.UsageError(
+            f"Strict MySQL run must collect exactly five live tests; missing={missing}, unexpected={unexpected}."
+        )
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    if not _strict_mode():
+        return
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    passed = len(reporter.stats.get("passed", [])) if reporter else 0
+    skipped = len(reporter.stats.get("skipped", [])) if reporter else 0
+    if exitstatus != pytest.ExitCode.OK or passed != 5 or skipped != 0:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+@pytest.fixture(scope="session")
+def mysql_payroll_database() -> Iterator[tuple[Engine, str]]:
+    try:
+        raw_url = mysql_test_url_from_environment()
+    except MySQLTestConfigurationError as exc:
+        pytest.fail(str(exc), pytrace=False)
+    if raw_url is None:
+        pytest.skip("EPMS_MYSQL_TEST_URL is unset; real-MySQL tests are opt-in.")
+    try:
+        target = parse_mysql_test_url(raw_url)
+    except ValueError as exc:
+        pytest.fail(str(exc), pytrace=False)
+
+    # Preparing this temporary copy performs file I/O only. It does not execute
+    # schema SQL or create/modify a database.
+    prepared_schema = prepare_schema_snapshot(target.database_name, schema_path=_SCHEMA_PATH)
+    engine = create_engine(target.url, pool_pre_ping=True, pool_recycle=300, echo=False)
+    try:
+        try:
+            with engine.connect() as connection:
+                version, selected_database = connection.execute(
+                    text("SELECT VERSION(), DATABASE()")
+                ).one()
+                version_major = str(version).split(".", 1)[0]
+                if not version_major.isdigit() or int(version_major) != 8:
+                    pytest.fail("Real-MySQL payroll tests require MySQL 8.", pytrace=False)
+                if selected_database != target.database_name:
+                    pytest.fail("MySQL selected a database other than the test target.", pytrace=False)
+                _verify_schema_state(connection, prepared_schema)
+        except pytest.fail.Exception:
+            raise
+        except Exception as exc:
+            pytest.fail(
+                f"Could not verify the isolated MySQL test database ({type(exc).__name__}).",
+                pytrace=False,
+            )
+        yield engine, target.database_name
+    finally:
+        engine.dispose()
+        prepared_schema.unlink(missing_ok=True)
+
+
+@pytest.fixture
+def mysql_test_engine(mysql_payroll_database: tuple[Engine, str]) -> Iterator[tuple[Engine, str]]:
+    yield mysql_payroll_database

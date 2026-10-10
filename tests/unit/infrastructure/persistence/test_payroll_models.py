@@ -9,11 +9,15 @@ from app.infrastructure.persistence.models.payroll_result_component import (
     PayrollResultComponentModel,
 )
 from app.infrastructure.persistence.models.payroll_run import PayrollRunModel
+from app.infrastructure.persistence.models.payroll_run_workforce_snapshot import (
+    PayrollRunWorkforceSnapshotModel,
+)
 from app.infrastructure.persistence.models.payslip import PayslipModel
 
 
 PAYROLL_MODELS = {
     "payroll_runs": PayrollRunModel,
+    "payroll_run_workforce_snapshots": PayrollRunWorkforceSnapshotModel,
     "payroll_results": PayrollResultModel,
     "payroll_result_components": PayrollResultComponentModel,
     "payroll_processing_issues": PayrollProcessingIssueModel,
@@ -45,14 +49,24 @@ def test_payroll_model_mysql_column_types_match_schema() -> None:
             "payroll_run_id": "BIGINT UNSIGNED", "payroll_year": "SMALLINT UNSIGNED",
             "payroll_month": "TINYINT UNSIGNED", "status": "VARCHAR(20)",
             "initiated_by_user_id": "BIGINT UNSIGNED", "started_at": "DATETIME",
+            "attempt_number": "BIGINT UNSIGNED",
+            "attempt_lease_expires_at": "DATETIME(6)",
             "completed_at": "DATETIME", "finalized_at": "DATETIME",
             "created_at": "DATETIME", "updated_at": "DATETIME",
+        },
+        "payroll_run_workforce_snapshots": {
+            "payroll_run_id": "BIGINT UNSIGNED",
+            "employee_id": "BIGINT UNSIGNED",
+            "attempt_number": "BIGINT UNSIGNED",
+            "snapshot_at": "DATETIME(6)",
+            "snapshot": "JSON",
         },
         "payroll_results": {
             "payroll_result_id": "BIGINT UNSIGNED", "payroll_run_id": "BIGINT UNSIGNED",
             "employee_id": "BIGINT UNSIGNED", "salary_assignment_id": "BIGINT UNSIGNED",
             "gross_earnings": "DECIMAL(15, 2)", "total_deductions": "DECIMAL(15, 2)",
             "net_salary": "DECIMAL(15, 2)", "processed_at": "DATETIME",
+            "workforce_calculation_snapshot": "JSON",
         },
         "payroll_result_components": {
             "payroll_result_component_id": "BIGINT UNSIGNED",
@@ -86,6 +100,14 @@ def test_payroll_models_keep_authoritative_constraints_and_indexes() -> None:
             {"pk_payroll_runs", "uq_payroll_period", "chk_payroll_month", "chk_payroll_run_status", "fk_payroll_run_initiator"},
             set(),
         ),
+        "payroll_run_workforce_snapshots": (
+            {
+                "pk_payroll_run_workforce_snapshots",
+                "fk_payroll_workforce_snapshot_run",
+                "fk_payroll_workforce_snapshot_employee",
+            },
+            {"idx_payroll_run_workforce_snapshots_attempt"},
+        ),
         "payroll_results": (
             {"pk_payroll_results", "uq_payroll_result_employee", "chk_payroll_gross_earnings", "chk_payroll_total_deductions", "chk_payroll_net_salary", "fk_payroll_result_run", "fk_payroll_result_employee", "fk_payroll_result_assignment"},
             {"idx_payroll_results_employee", "idx_payroll_results_assignment"},
@@ -113,15 +135,17 @@ def test_payroll_models_keep_authoritative_constraints_and_indexes() -> None:
 
 def test_payroll_models_match_authoritative_column_names_and_nullability() -> None:
     expected = {
-        "payroll_runs": {"payroll_run_id", "payroll_year", "payroll_month", "status", "initiated_by_user_id", "started_at", "completed_at", "finalized_at", "created_at", "updated_at"},
-        "payroll_results": {"payroll_result_id", "payroll_run_id", "employee_id", "salary_assignment_id", "gross_earnings", "total_deductions", "net_salary", "processed_at"},
+        "payroll_runs": {"payroll_run_id", "payroll_year", "payroll_month", "status", "initiated_by_user_id", "started_at", "attempt_number", "attempt_lease_expires_at", "completed_at", "finalized_at", "created_at", "updated_at"},
+        "payroll_run_workforce_snapshots": {"payroll_run_id", "employee_id", "attempt_number", "snapshot_at", "snapshot"},
+        "payroll_results": {"payroll_result_id", "payroll_run_id", "employee_id", "salary_assignment_id", "gross_earnings", "total_deductions", "net_salary", "processed_at", "workforce_calculation_snapshot"},
         "payroll_result_components": {"payroll_result_component_id", "payroll_result_id", "salary_component_id", "component_type", "amount", "calculation_order"},
         "payroll_processing_issues": {"payroll_issue_id", "payroll_run_id", "employee_id", "issue_code", "issue_message", "status", "detected_at", "resolved_at"},
         "payslips": {"payslip_id", "payroll_result_id", "payslip_number", "generated_by_user_id", "generated_at", "document_path"},
     }
     nullable_columns = {
-        "payroll_runs": {"started_at", "completed_at", "finalized_at"},
-        "payroll_results": set(),
+        "payroll_runs": {"started_at", "attempt_lease_expires_at", "completed_at", "finalized_at"},
+        "payroll_run_workforce_snapshots": set(),
+        "payroll_results": {"workforce_calculation_snapshot"},
         "payroll_result_components": set(),
         "payroll_processing_issues": {"employee_id", "resolved_at"},
         "payslips": set(),

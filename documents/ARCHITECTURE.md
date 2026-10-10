@@ -258,6 +258,12 @@ Planned controls:
 - consistent lock ordering
 - bounded deadlock retry
 
+Attempt-owned Payroll writes coordinate through the parent Payroll Run row lock
+and validate the current attempt. The approved attempt lease is 15 minutes and
+uses a database timestamp; lease renewal and crash recovery are later
+implementation work. Retry reconciliation and activation of a new attempt use
+one Unit of Work transaction.
+
 ---
 
 # 11. Frontend

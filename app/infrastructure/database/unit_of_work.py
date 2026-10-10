@@ -1,6 +1,8 @@
+from datetime import datetime
 from types import TracebackType
 from typing import Self
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.application.common.unit_of_work import UnitOfWork
@@ -56,6 +58,9 @@ from app.infrastructure.persistence.repositories.employee_salary_assignment_repo
 from app.infrastructure.persistence.repositories.payroll_run_repository import (
     PayrollRunRepository,
 )
+from app.infrastructure.persistence.repositories.payroll_run_workforce_snapshot_repository import (
+    PayrollRunWorkforceSnapshotRepository,
+)
 from app.infrastructure.persistence.repositories.payroll_result_repository import (
     PayrollResultRepository,
 )
@@ -66,6 +71,12 @@ from app.infrastructure.persistence.repositories.payroll_processing_issue_reposi
     PayrollProcessingIssueRepository,
 )
 from app.infrastructure.persistence.repositories.payslip_repository import PayslipRepository
+from app.infrastructure.persistence.repositories.work_calendar_repository import (
+    SQLAlchemyWorkCalendarRepository,
+)
+from app.infrastructure.persistence.repositories.overtime_policy_repository import (
+    OvertimePolicyRepository,
+)
 
 
 class SQLAlchemyUnitOfWork(UnitOfWork):
@@ -89,10 +100,15 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
         self.salary_revision_components: SalaryRevisionComponentRepository | None = None
         self.employee_salary_assignments: EmployeeSalaryAssignmentRepository | None = None
         self.payroll_runs: PayrollRunRepository | None = None
+        self.payroll_run_workforce_snapshots: (
+            PayrollRunWorkforceSnapshotRepository | None
+        ) = None
         self.payroll_results: PayrollResultRepository | None = None
         self.payroll_result_components: PayrollResultComponentRepository | None = None
         self.payroll_processing_issues: PayrollProcessingIssueRepository | None = None
         self.payslips: PayslipRepository | None = None
+        self.work_calendars: SQLAlchemyWorkCalendarRepository | None = None
+        self.overtime_policies: OvertimePolicyRepository | None = None
 
     def __enter__(self) -> Self:
         self.session = SessionLocal()
@@ -113,10 +129,15 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
         self.salary_revision_components = SalaryRevisionComponentRepository(self.session)
         self.employee_salary_assignments = EmployeeSalaryAssignmentRepository(self.session)
         self.payroll_runs = PayrollRunRepository(self.session)
+        self.payroll_run_workforce_snapshots = PayrollRunWorkforceSnapshotRepository(
+            self.session, self.payroll_runs
+        )
         self.payroll_results = PayrollResultRepository(self.session)
         self.payroll_result_components = PayrollResultComponentRepository(self.session)
         self.payroll_processing_issues = PayrollProcessingIssueRepository(self.session)
         self.payslips = PayslipRepository(self.session)
+        self.work_calendars = SQLAlchemyWorkCalendarRepository(self.session)
+        self.overtime_policies = OvertimePolicyRepository(self.session)
         return self
 
     def __exit__(
@@ -149,10 +170,13 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
                 self.salary_revision_components = None
                 self.employee_salary_assignments = None
                 self.payroll_runs = None
+                self.payroll_run_workforce_snapshots = None
                 self.payroll_results = None
                 self.payroll_result_components = None
                 self.payroll_processing_issues = None
                 self.payslips = None
+                self.work_calendars = None
+                self.overtime_policies = None
 
     def commit(self) -> None:
         if self.session is None:
@@ -165,3 +189,27 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
             raise RuntimeError("Unit of Work has not been started.")
 
         self.session.rollback()
+
+    def begin_workforce_consistent_read(self) -> datetime:
+        if self.session is None:
+            raise RuntimeError("Unit of Work has not been started.")
+        if self.session.in_transaction():
+            raise RuntimeError(
+                "Workforce consistent read must start after the prior transaction ends."
+            )
+
+        # Expire objects loaded during the claim so ORM identity-map values cannot
+        # bypass the new InnoDB read view.
+        self.session.expire_all()
+        connection = self.session.connection(
+            execution_options={"isolation_level": "REPEATABLE READ"}
+        )
+        if connection.dialect.name != "mysql":
+            raise RuntimeError(
+                "Workforce consistent snapshots require MySQL/InnoDB."
+            )
+        connection.exec_driver_sql("START TRANSACTION WITH CONSISTENT SNAPSHOT")
+        timestamp = connection.scalar(text("SELECT CURRENT_TIMESTAMP(6)"))
+        if not isinstance(timestamp, datetime):
+            raise RuntimeError("Database did not return the Workforce snapshot timestamp.")
+        return timestamp

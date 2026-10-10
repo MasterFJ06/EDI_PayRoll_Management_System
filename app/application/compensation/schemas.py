@@ -63,6 +63,7 @@ class SalaryRevisionComponentCreateRequest(BaseModel):
     fixed_amount: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     percentage_value: Decimal | None = Field(default=None, ge=0, max_digits=8, decimal_places=4)
     base_component_id: int | None = Field(default=None, gt=0)
+    is_overtime_base: bool
 
 
 class SalaryRevisionComponentResponse(BaseModel):
@@ -72,6 +73,7 @@ class SalaryRevisionComponentResponse(BaseModel):
     fixed_amount: Decimal | None
     percentage_value: Decimal | None
     base_component_id: int | None
+    is_overtime_base: bool
 
 
 class EmployeeSalaryAssignmentCreateRequest(BaseModel):

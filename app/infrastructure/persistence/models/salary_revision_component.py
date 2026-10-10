@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from sqlalchemy import (
+    Boolean,
     DECIMAL,
     CheckConstraint,
     ForeignKey,
@@ -43,6 +44,9 @@ class SalaryRevisionComponentModel(Base):
             "base_component_id IS NULL OR base_component_id <> salary_component_id",
             name="chk_salary_component_not_self_base",
         ),
+        CheckConstraint(
+            "is_overtime_base IN (0, 1)", name="chk_salary_overtime_base_boolean"
+        ),
         Index("idx_revision_components_component", "salary_component_id"),
         Index("idx_revision_components_base", "base_component_id"),
         {"mysql_engine": "InnoDB"},
@@ -67,6 +71,9 @@ class SalaryRevisionComponentModel(Base):
         ),
     )
     calculation_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    is_overtime_base: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("FALSE")
+    )
     fixed_amount: Mapped[Decimal | None] = mapped_column(DECIMAL(15, 2), nullable=True)
     percentage_value: Mapped[Decimal | None] = mapped_column(DECIMAL(8, 4), nullable=True)
     base_component_id: Mapped[int | None] = mapped_column(
