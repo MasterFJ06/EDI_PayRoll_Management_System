@@ -14,6 +14,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 from fastapi.testclient import TestClient
@@ -27,6 +28,7 @@ class SeededPayroll:
     designation_id: int
     role_id: int
     permission_id: int
+    finalize_permission_id: int
     salary_structure_id: int
     salary_component_id: int
     salary_revision_id: int
@@ -309,6 +311,165 @@ def test_stale_or_expired_attempt_cannot_complete_qa(
             assert run.attempt_lease_expires_at > datetime.utcnow()
 
 
+def _process_for_finalization(seed: SeededPayroll) -> None:
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    token = create_access_token(seed.user_id, seed.username)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            f"/api/v1/payroll/runs/{seed.payroll_run_id}/process",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "PROCESSED"
+
+
+def _finalize_request(seed: SeededPayroll):
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    token = create_access_token(seed.user_id, seed.username)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        return client.post(
+            f"/api/v1/payroll/runs/{seed.payroll_run_id}/finalize",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+
+def test_finalizes_processed_run_atomically(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.audit_event import AuditEventModel
+    from app.infrastructure.persistence.models.payroll_result import PayrollResultModel
+    from app.infrastructure.persistence.models.payroll_run import PayrollRunModel
+    from app.infrastructure.persistence.models.payroll_run_workforce_snapshot import PayrollRunWorkforceSnapshotModel
+
+    _process_for_finalization(seed)
+    with Session(engine) as session:
+        before_result = session.scalar(
+            select(PayrollResultModel).where(PayrollResultModel.payroll_run_id == seed.payroll_run_id)
+        )
+        before_snapshot = session.get(PayrollRunWorkforceSnapshotModel, (seed.payroll_run_id, seed.employee_id))
+        assert before_result is not None and before_snapshot is not None
+        result_id = before_result.payroll_result_id
+        result_snapshot = before_result.workforce_calculation_snapshot
+        frozen_workforce = before_snapshot.snapshot
+
+    response = _finalize_request(seed)
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "FINALIZED"
+    with Session(engine) as session:
+        run = session.get(PayrollRunModel, seed.payroll_run_id)
+        result = session.get(PayrollResultModel, result_id)
+        snapshot = session.get(PayrollRunWorkforceSnapshotModel, (seed.payroll_run_id, seed.employee_id))
+        audit = session.scalar(
+            select(AuditEventModel).where(
+                AuditEventModel.action_type == "PAYROLL_RUN_FINALIZED",
+                AuditEventModel.resource_id == seed.payroll_run_id,
+            )
+        )
+        assert run is not None and run.status == "FINALIZED" and run.finalized_at is not None
+        assert result is not None and result.workforce_calculation_snapshot == result_snapshot
+        assert snapshot is not None and snapshot.snapshot == frozen_workforce
+        assert audit is not None
+        assert audit.actor_user_id == seed.user_id
+        assert audit.correlation_id is not None
+
+
+def test_finalization_rechecks_state_and_open_issues_under_lock(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+    from app.infrastructure.persistence.models.audit_event import AuditEventModel
+    from app.infrastructure.persistence.models.payroll_processing_issue import PayrollProcessingIssueModel
+    from app.infrastructure.persistence.models.payroll_run import PayrollRunModel
+
+    token = create_access_token(seed.user_id, seed.username)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        created_response = client.post(
+            f"/api/v1/payroll/runs/{seed.payroll_run_id}/finalize",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert created_response.status_code == 409
+
+    with Session(engine) as session:
+        run = session.get(PayrollRunModel, seed.payroll_run_id)
+        assert run is not None
+        run.status = "PROCESSED"
+        issue = PayrollProcessingIssueModel(
+            payroll_run_id=seed.payroll_run_id,
+            employee_id=seed.employee_id,
+            issue_code="R7_FINALIZATION_BLOCKER",
+            issue_message="Controlled finalization prerequisite test.",
+            status="OPEN",
+        )
+        session.add(issue)
+        session.commit()
+    with TestClient(app, raise_server_exceptions=False) as client:
+        open_issue_response = client.post(
+            f"/api/v1/payroll/runs/{seed.payroll_run_id}/finalize",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert open_issue_response.status_code == 409
+    with Session(engine) as session:
+        run = session.get(PayrollRunModel, seed.payroll_run_id)
+        finalization_audit = session.scalar(
+            select(AuditEventModel).where(
+                AuditEventModel.action_type == "PAYROLL_RUN_FINALIZED",
+                AuditEventModel.resource_id == seed.payroll_run_id,
+            )
+        )
+        assert run is not None and run.status == "PROCESSED"
+        assert finalization_audit is None
+
+
+def test_repeated_finalization_returns_conflict(real_mysql_payroll) -> None:
+    _process_for_finalization(real_mysql_payroll[1])
+    first = _finalize_request(real_mysql_payroll[1])
+    second = _finalize_request(real_mysql_payroll[1])
+    assert first.status_code == 200, first.text
+    assert second.status_code == 409
+
+
+def test_concurrent_finalization_has_one_winner(real_mysql_payroll) -> None:
+    seed = real_mysql_payroll[1]
+    _process_for_finalization(seed)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(lambda _index: _finalize_request(seed), range(2)))
+    assert sorted(response.status_code for response in responses) == [200, 409]
+
+
+def test_finalization_and_audit_roll_back_together_on_audit_failure(
+    real_mysql_payroll, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.audit_event import AuditEventModel
+    from app.infrastructure.persistence.models.payroll_run import PayrollRunModel
+    from app.infrastructure.persistence.repositories.audit_event_repository import AuditEventRepository
+
+    _process_for_finalization(seed)
+    original_add = AuditEventRepository.add
+
+    def fail_finalization_audit(repository, event, changes=()):
+        if event.action_type == "PAYROLL_RUN_FINALIZED":
+            raise RuntimeError("R7 controlled finalization audit fault")
+        return original_add(repository, event, changes)
+
+    monkeypatch.setattr(AuditEventRepository, "add", fail_finalization_audit)
+    response = _finalize_request(seed)
+    assert response.status_code == 500
+    with Session(engine) as session:
+        run = session.get(PayrollRunModel, seed.payroll_run_id)
+        audit = session.scalar(
+            select(AuditEventModel).where(
+                AuditEventModel.action_type == "PAYROLL_RUN_FINALIZED",
+                AuditEventModel.resource_id == seed.payroll_run_id,
+            )
+        )
+        assert run is not None and run.status == "PROCESSED" and run.finalized_at is None
+        assert audit is None
+
+
 def _seed_valid_payroll(engine) -> SeededPayroll:
     from app.infrastructure.persistence.models.attendance import AttendanceRecord
     from app.infrastructure.persistence.models.department import Department
@@ -344,6 +505,9 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
         )
         role = Role(role_name=f"R6 Test Payroll {marker}", is_active=True)
         permission = Permission(permission_code="payroll.run.process", description="R6 test")
+        finalize_permission = Permission(
+            permission_code="payroll.run.finalize", description="R7 test"
+        )
         department = Department(
             department_code=f"R6D{marker}", department_name=f"R6 Department {marker}", status="ACTIVE"
         )
@@ -356,11 +520,12 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
         component = SalaryComponentModel(
             component_code=f"R6C{marker}", component_name=f"R6 Base {marker}", component_type="EARNING", status="ACTIVE"
         )
-        session.add_all([user, role, permission, department, designation, structure, component])
+        session.add_all([user, role, permission, finalize_permission, department, designation, structure, component])
         session.flush()
         session.add_all([
             UserRole(user_id=user.user_id, role_id=role.role_id, assigned_by_user_id=user.user_id),
             RolePermission(role_id=role.role_id, permission_id=permission.permission_id),
+            RolePermission(role_id=role.role_id, permission_id=finalize_permission.permission_id),
         ])
         employee = Employee(
             employee_code=f"R6E{marker}", user_id=None, first_name="Test", last_name=marker,
@@ -439,6 +604,7 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
             designation_id=designation.designation_id,
             role_id=role.role_id,
             permission_id=permission.permission_id,
+            finalize_permission_id=finalize_permission.permission_id,
             salary_structure_id=structure.salary_structure_id,
             salary_component_id=component.salary_component_id,
             salary_revision_id=revision.salary_revision_id,
@@ -505,7 +671,7 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
         session.execute(delete(Designation).where(Designation.designation_id == seed.designation_id))
         session.execute(delete(RolePermission).where(RolePermission.role_id == seed.role_id))
         session.execute(delete(UserRole).where(UserRole.user_id == seed.user_id))
-        session.execute(delete(Permission).where(Permission.permission_id == seed.permission_id))
+        session.execute(delete(Permission).where(Permission.permission_id.in_([seed.permission_id, seed.finalize_permission_id])))
         session.execute(delete(Role).where(Role.role_id == seed.role_id))
         session.execute(delete(User).where(User.user_id == seed.user_id))
 

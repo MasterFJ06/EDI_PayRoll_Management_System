@@ -113,6 +113,39 @@ class PayrollRunRepository(PayrollRunRepositoryContract):
             .execution_options(populate_existing=True)
         )
 
+    def lock_for_finalization(self, payroll_run_id: int) -> PayrollRunModel | None:
+        return self.session.scalar(
+            select(PayrollRunModel)
+            .where(PayrollRunModel.payroll_run_id == payroll_run_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+    def finalize_processed_run(self, payroll_run_id: int) -> bool:
+        dialect_name = self.session.get_bind().dialect.name
+        if dialect_name not in {"mysql", "sqlite"}:
+            raise RuntimeError(
+                f"Payroll Run finalization does not support database dialect {dialect_name}."
+            )
+        result = self.session.execute(
+            update(PayrollRunModel)
+            .where(
+                PayrollRunModel.payroll_run_id == payroll_run_id,
+                PayrollRunModel.status == "PROCESSED",
+            )
+            .values(
+                status="FINALIZED",
+                finalized_at=self._database_current_time(dialect_name),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            return False
+        run = self.session.get(PayrollRunModel, payroll_run_id)
+        if run is not None:
+            self.session.refresh(run)
+        return True
+
     def retry_failed_attempt(
         self, payroll_run_id: int, expected_attempt_number: int
     ) -> int | None:

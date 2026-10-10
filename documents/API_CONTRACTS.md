@@ -369,8 +369,8 @@ only one can claim the run and subsequent attempts return HTTP 409 without reset
 Unexpected orchestration failures use the centralized HTTP 500 response and attempt an
 atomic `PROCESSING` to `FAILED` transition. A started or failed lifecycle transition is
 recorded in the existing audit tables and includes the request correlation ID when
-available. Retry, finalization, calculation, and result/payslip artifact generation
-are not implemented.
+available. Calculation and result/payslip artifact generation remain outside
+the implemented processing request contract.
 
 The processing workflow also resolves the internal Phase 2B-2 employee eligibility
 outcome. This does not change the HTTP response contract: eligible and excluded
@@ -397,6 +397,26 @@ The expected attempt number used by the retry application service is resolved
 internally from the requested Payroll Run; it is not part of the public request
 or response contract. The transactional retry operation revalidates the attempt
 under the Payroll Run row lock.
+
+### Approved Payroll Run Finalization Contract
+
+`POST /api/v1/payroll/runs/{run_id}/finalize` requires an active authenticated
+user with the persisted `payroll.run.finalize` permission. It accepts no request
+body; the actor is derived from the authenticated user. The operation locks the
+parent Payroll Run, verifies that its current status is `PROCESSED`, rechecks
+blocking OPEN issues and the payslip invariant under that lock, then transitions
+the run to terminal `FINALIZED`. The status transition, `finalized_at` timestamp,
+and `PAYROLL_RUN_FINALIZED` audit event are committed atomically. Final Payroll
+Results and Workforce snapshots remain immutable, and this operation does not
+generate payslips.
+
+Success returns HTTP 200 using the existing Payroll Run response fields, with
+status `FINALIZED`. Unauthenticated requests return HTTP 401; authenticated
+users without the permission receive HTTP 403; a missing run returns HTTP 404;
+a run in any state other than `PROCESSED`, an OPEN issue, or a violated payslip
+invariant returns HTTP 409. Concurrent or repeated requests are serialized by
+the parent-row lock and conditional state transition: exactly one request may
+succeed, and competing or subsequent requests receive HTTP 409.
 
 ---
 
@@ -425,9 +445,9 @@ provide the user identity, role, or permission used for the decision.
 The development seed catalog includes the `Payroll Administrator` role and granular
 permissions `payroll.run.create`, `payroll.run.read`, `payroll.run.process`,
 `payroll.run.retry`, and `payroll.run.finalize`. No user is assigned to the role by the
-seed data. Implemented Payroll Run operations are documented in the Phase 2A and
-Phase 2B-1 sections above. Retry is contractually defined above but remains
-unimplemented; finalization and payslip operations also remain unimplemented.
+seed data. Implemented Payroll Run operations are documented in the Phase 2A,
+Phase 2B-1, retry, and finalization sections above. Payslip operations remain
+unimplemented.
 
 ---
 

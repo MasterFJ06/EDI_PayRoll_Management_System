@@ -28,6 +28,18 @@ class PayrollProcessingIssueRepository(PayrollProcessingIssueRepositoryContract)
         )
         return list(self.session.scalars(statement).all())
 
+    def has_open_for_update(self, payroll_run_id: int) -> bool:
+        statement = (
+            select(PayrollProcessingIssueModel.payroll_issue_id)
+            .where(
+                PayrollProcessingIssueModel.payroll_run_id == payroll_run_id,
+                PayrollProcessingIssueModel.status == "OPEN",
+            )
+            .limit(1)
+            .with_for_update()
+        )
+        return self.session.scalar(statement) is not None
+
     def add(
         self, issue: PayrollProcessingIssueModel
     ) -> PayrollProcessingIssueModel:

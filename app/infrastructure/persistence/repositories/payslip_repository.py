@@ -36,6 +36,18 @@ class PayslipRepository(PayslipRepositoryContract):
             .limit(1)
         )
 
+    def get_by_run_id_for_update(self, payroll_run_id: int) -> PayslipModel | None:
+        return self.session.scalar(
+            select(PayslipModel)
+            .join(
+                PayrollResultModel,
+                PayslipModel.payroll_result_id == PayrollResultModel.payroll_result_id,
+            )
+            .where(PayrollResultModel.payroll_run_id == payroll_run_id)
+            .limit(1)
+            .with_for_update()
+        )
+
     def add(self, payslip: PayslipModel) -> PayslipModel:
         self.session.add(payslip)
         self.session.flush()
