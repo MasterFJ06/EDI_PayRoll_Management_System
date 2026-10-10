@@ -718,3 +718,26 @@ means no document has been generated; empty, fabricated, and placeholder paths
 are not permitted. The schema snapshot and migration preserve existing document
 paths. No employee self-service or document-storage behavior is implied by this
 decision.
+
+---
+
+# Decision 39 — Finalized Payroll Summary and Reporting Labels
+
+The first Reporting & Analytics increment exposes an aggregate summary for one
+`FINALIZED` Payroll Run. Its result count and gross, deduction, and net totals
+come from the persisted `payroll_results` rows belonging to that run. Stored
+Payroll Result totals are authoritative: reporting does not recalculate payroll,
+reconstruct totals from components, read Workforce snapshots, or expose data
+from a non-finalized run. A missing run returns 404; a non-finalized run returns
+409. A finalized run with zero results is an invalid state and returns 409;
+zero-result QA findings prevent a valid run from reaching finalization.
+
+The summary requires persisted permission `report.payroll.read`, assigned only
+to the Payroll Administrator role by the development seed. It is read-only and
+does not produce an audit event. This increment returns no employee names or
+salary-component labels. For later reporting features, labels may be resolved
+from current master data; there is no historical-label guarantee.
+
+Employee-level Payroll Result reports, component breakdowns, dashboards, CSV
+exports, and employee self-service reports remain deferred. This decision adds
+no database table or schema change.

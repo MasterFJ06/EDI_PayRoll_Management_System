@@ -1,4 +1,6 @@
-from sqlalchemy import delete, select
+from decimal import Decimal
+
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.domain.payroll.repository import PayrollResultRepository as PayrollResultRepositoryContract
@@ -43,6 +45,18 @@ class PayrollResultRepository(PayrollResultRepositoryContract):
             .order_by(PayrollResultModel.employee_id, PayrollResultModel.payroll_result_id)
         )
         return list(self.session.scalars(statement).all())
+
+    def aggregate_by_run(
+        self, payroll_run_id: int
+    ) -> tuple[int, Decimal | None, Decimal | None, Decimal | None]:
+        statement = select(
+            func.count(PayrollResultModel.payroll_result_id),
+            func.sum(PayrollResultModel.gross_earnings),
+            func.sum(PayrollResultModel.total_deductions),
+            func.sum(PayrollResultModel.net_salary),
+        ).where(PayrollResultModel.payroll_run_id == payroll_run_id)
+        count, gross, deductions, net = self.session.execute(statement).one()
+        return int(count), gross, deductions, net
 
     def add(self, payroll_result: PayrollResultModel) -> PayrollResultModel:
         self.session.add(payroll_result)

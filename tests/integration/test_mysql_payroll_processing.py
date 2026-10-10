@@ -27,9 +27,12 @@ class SeededPayroll:
     department_id: int
     designation_id: int
     role_id: int
+    created_role: bool
+    created_role_permission_ids: tuple[int, ...]
     permission_id: int
     finalize_permission_id: int
     payslip_permission_id: int
+    report_permission_id: int
     created_permission_ids: tuple[int, ...]
     salary_structure_id: int
     salary_component_id: int
@@ -605,6 +608,59 @@ def test_payslip_generation_preserves_finalized_financial_data(real_mysql_payrol
         assert run.status == "FINALIZED"
 
 
+def test_finalized_payroll_summary_uses_persisted_results_and_rbac(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.payroll_result import PayrollResultModel
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    token = create_access_token(seed.user_id, seed.username)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        non_finalized = client.get(
+            f"/api/v1/reports/payroll/runs/{seed.payroll_run_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert non_finalized.status_code == 409, non_finalized.text
+
+    _finalize_seed_run(seed)
+    with Session(engine) as session:
+        expected = session.execute(
+            select(
+                func.count(PayrollResultModel.payroll_result_id),
+                func.sum(PayrollResultModel.gross_earnings),
+                func.sum(PayrollResultModel.total_deductions),
+                func.sum(PayrollResultModel.net_salary),
+            ).where(PayrollResultModel.payroll_run_id == seed.payroll_run_id)
+        ).one()
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get(
+            f"/api/v1/reports/payroll/runs/{seed.payroll_run_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload == {
+        "payroll_run_id": seed.payroll_run_id,
+        "payroll_year": date.today().year,
+        "payroll_month": date.today().month,
+        "status": "FINALIZED",
+        "initiated_by_user_id": seed.user_id,
+        "employee_result_count": expected[0],
+        "total_gross_pay": str(expected[1]),
+        "total_deductions": str(expected[2]),
+        "total_net_pay": str(expected[3]),
+    }
+    sensitive_fields = {
+        "employee_id",
+        "employee_name",
+        "components",
+        "workforce_calculation_snapshot",
+    }
+    assert not sensitive_fields & payload.keys()
+
+
 def _seed_valid_payroll(engine) -> SeededPayroll:
     from app.infrastructure.persistence.models.attendance import AttendanceRecord
     from app.infrastructure.persistence.models.department import Department
@@ -637,7 +693,12 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
             password_hash=hash_password("R6-only synthetic credential"),
             status="ACTIVE",
         )
-        role = Role(role_name=f"R6 Test Payroll {marker}", is_active=True)
+        role = session.scalar(
+            select(Role).where(Role.role_name == "Payroll Administrator")
+        )
+        created_role = role is None
+        if role is None:
+            role = Role(role_name="Payroll Administrator", is_active=True)
         permission, created_permission = _get_or_create_permission(
             session, "payroll.run.process", "R6 test"
         )
@@ -646,6 +707,9 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
         )
         payslip_permission, created_payslip_permission = _get_or_create_permission(
             session, "payroll.payslip.create", "R8 test"
+        )
+        report_permission, created_report_permission = _get_or_create_permission(
+            session, "report.payroll.read", "Payroll summary read"
         )
         department = Department(
             department_code=f"R6D{marker}", department_name=f"R6 Department {marker}", status="ACTIVE"
@@ -659,14 +723,29 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
         component = SalaryComponentModel(
             component_code=f"R6C{marker}", component_name=f"R6 Base {marker}", component_type="EARNING", status="ACTIVE"
         )
-        session.add_all([user, role, department, designation, structure, component])
+        session.add_all([user, department, designation, structure, component])
+        if created_role:
+            session.add(role)
         session.flush()
-        session.add_all([
-            UserRole(user_id=user.user_id, role_id=role.role_id, assigned_by_user_id=user.user_id),
-            RolePermission(role_id=role.role_id, permission_id=permission.permission_id),
-            RolePermission(role_id=role.role_id, permission_id=finalize_permission.permission_id),
-            RolePermission(role_id=role.role_id, permission_id=payslip_permission.permission_id),
-        ])
+        session.add(
+            UserRole(
+                user_id=user.user_id,
+                role_id=role.role_id,
+                assigned_by_user_id=user.user_id,
+            )
+        )
+        created_role_permission_ids = []
+        for item in (
+            permission,
+            finalize_permission,
+            payslip_permission,
+            report_permission,
+        ):
+            if session.get(RolePermission, (role.role_id, item.permission_id)) is None:
+                session.add(
+                    RolePermission(role_id=role.role_id, permission_id=item.permission_id)
+                )
+                created_role_permission_ids.append(item.permission_id)
         employee = Employee(
             employee_code=f"R6E{marker}", user_id=None, first_name="Test", last_name=marker,
             department_id=department.department_id, designation_id=designation.designation_id,
@@ -743,15 +822,19 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
             department_id=department.department_id,
             designation_id=designation.designation_id,
             role_id=role.role_id,
+            created_role=created_role,
+            created_role_permission_ids=tuple(created_role_permission_ids),
             permission_id=permission.permission_id,
             finalize_permission_id=finalize_permission.permission_id,
             payslip_permission_id=payslip_permission.permission_id,
+            report_permission_id=report_permission.permission_id,
             created_permission_ids=tuple(
                 item.permission_id
                 for item, created in (
                     (permission, created_permission),
                     (finalize_permission, created_finalize_permission),
                     (payslip_permission, created_payslip_permission),
+                    (report_permission, created_report_permission),
                 )
                 if created
             ),
@@ -830,7 +913,13 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
         session.execute(delete(Employee).where(Employee.employee_id == seed.employee_id))
         session.execute(delete(Department).where(Department.department_id == seed.department_id))
         session.execute(delete(Designation).where(Designation.designation_id == seed.designation_id))
-        session.execute(delete(RolePermission).where(RolePermission.role_id == seed.role_id))
+        if seed.created_role_permission_ids:
+            session.execute(
+                delete(RolePermission).where(
+                    RolePermission.role_id == seed.role_id,
+                    RolePermission.permission_id.in_(seed.created_role_permission_ids),
+                )
+            )
         session.execute(delete(UserRole).where(UserRole.user_id == seed.user_id))
         if seed.created_permission_ids:
             referenced_permission_ids = set(
@@ -849,7 +938,8 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
                         Permission.permission_id.in_(unused_created_permission_ids)
                     )
                 )
-        session.execute(delete(Role).where(Role.role_id == seed.role_id))
+        if seed.created_role:
+            session.execute(delete(Role).where(Role.role_id == seed.role_id))
         session.execute(delete(User).where(User.user_id == seed.user_id))
 
 

@@ -458,6 +458,34 @@ path is prohibited. The `payroll.payslip.create` permission is included in the
 seed catalog and Payroll Administrator role assignment. No employee
 self-service or document-storage contract is established here.
 
+### Phase 2B-9A — Finalized Payroll Run Summary
+
+`GET /api/v1/reports/payroll/runs/{run_id}` requires the persisted
+`report.payroll.read` permission, initially assigned only to the existing
+Payroll Administrator role. The endpoint returns a read-only summary for a
+`FINALIZED` Payroll Run: `payroll_run_id`, `payroll_year`, `payroll_month`,
+`status`, `initiated_by_user_id`, `employee_result_count`, `total_gross_pay`,
+`total_deductions`, and `total_net_pay`.
+
+The three monetary totals and the result count are aggregated from persisted
+`payroll_results` rows scoped to the requested run. Stored gross, deduction,
+and net amounts are authoritative; the endpoint does not recalculate payroll,
+sum components, read Workforce snapshots, or return employee-level data,
+component details, or personal labels. It does not write a report-read audit
+event. No historical-label guarantee is established for future reporting
+features.
+
+Unauthenticated requests return HTTP 401 and authenticated users without the
+permission return HTTP 403. A missing run returns HTTP 404. Existing runs
+whose state is not `FINALIZED` return HTTP 409 without querying or exposing
+their financial totals. QA prevents a zero-eligible run from reaching
+`PROCESSED`, and finalization is gated by QA issues; an anomalous finalized run
+with no persisted Payroll Results therefore returns HTTP 409 rather than
+fabricated zero totals.
+
+Employee-level result reports, salary-component breakdowns, dashboards, CSV
+exports, and employee self-service reports are deferred.
+
 ---
 
 # Authentication
@@ -484,7 +512,8 @@ provide the user identity, role, or permission used for the decision.
 
 The development seed catalog includes the `Payroll Administrator` role and granular
 permissions `payroll.run.create`, `payroll.run.read`, `payroll.run.process`,
-`payroll.run.retry`, `payroll.run.finalize`, and `payroll.payslip.create`. No
+`payroll.run.retry`, `payroll.run.finalize`, `payroll.payslip.create`, and
+`report.payroll.read`. No
 user is assigned to the role by the seed data. Implemented
 Payroll Run operations are documented in the Phase 2A, Phase 2B-1, retry, and
 finalization sections above. Individual payslip record generation is

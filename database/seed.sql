@@ -10,6 +10,7 @@ VALUES
     ('payroll.run.retry', 'Retry a failed payroll run.'),
     ('payroll.run.finalize', 'Finalize a processed payroll run.'),
     ('payroll.payslip.create', 'Generate an individual payslip record.'),
+    ('report.payroll.read', 'View finalized payroll run summaries.'),
     ('organization.calendar.read', 'View organization work calendar versions.'),
     ('organization.calendar.manage', 'Manage organization work calendar versions and overrides.'),
     ('workforce.leave_type.manage', 'Create and manage Leave Types.'),
@@ -29,6 +30,7 @@ JOIN permissions AS p
       'payroll.run.process',
       'payroll.run.retry',
       'payroll.run.finalize',
-      'payroll.payslip.create'
+      'payroll.payslip.create',
+      'report.payroll.read'
   )
 WHERE r.role_name = 'Payroll Administrator';

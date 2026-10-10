@@ -660,3 +660,27 @@ Verification:
   semantics were not exercised because the sandbox denied the configured local
   socket connection (`WinError 10013`)
 - `git diff --check` passed
+
+---
+
+## Reporting & Analytics — Phase 2B-9A Finalized Payroll Summary
+
+Implemented the read-only `GET /api/v1/reports/payroll/runs/{run_id}` summary
+for finalized Payroll Runs. It uses a run-scoped SQL aggregate over persisted
+Payroll Result gross, deduction, and net columns and returns the persisted result
+count. It does not recalculate payroll, load employee/workforce/component
+details, or write an audit event. The `report.payroll.read` permission is
+included in the seed catalog and assigned only to the Payroll Administrator
+role. An anomalous finalized run with zero results returns 409, consistent with
+the existing zero-eligible QA blocker. No schema change or migration was added.
+
+Verification:
+
+- Reporting service and Payroll Result repository tests: 16 passed
+- Focused database safety and schema preparation tests: 58 passed
+- Full `tests/unit`: 630 passed
+- Real-MySQL suite: 17 tests collected; runtime not executed locally
+- API TestClient tests stalled in this Windows environment without output; the
+  API contract test is included in the manually triggered CI workflow
+- GitHub Actions MySQL 8 runtime validation is pending; no live MySQL result is
+  claimed

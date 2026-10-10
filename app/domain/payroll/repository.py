@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from datetime import date
+from decimal import Decimal
 
 from app.domain.payroll.payroll_processing_issue import PayrollProcessingIssue
 from app.domain.payroll.payroll_result import PayrollResult
@@ -101,6 +102,11 @@ class PayrollResultRepository(ABC):
 
     @abstractmethod
     def list_by_run(self, payroll_run_id: int) -> list[PayrollResult]: ...
+
+    @abstractmethod
+    def aggregate_by_run(
+        self, payroll_run_id: int
+    ) -> tuple[int, Decimal | None, Decimal | None, Decimal | None]: ...
 
     @abstractmethod
     def add(self, payroll_result: PayrollResult) -> PayrollResult: ...
