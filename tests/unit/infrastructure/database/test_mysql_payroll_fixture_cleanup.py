@@ -35,6 +35,30 @@ def test_runtime_workflow_leaves_rbac_seeding_to_the_integration_fixture() -> No
     assert "p.permission_code = 'report.employee.read'" in production_seed
 
 
+def test_employee_report_fixture_seeds_and_cleans_only_hr_employee_read_access() -> None:
+    repository_root = Path(__file__).resolve().parents[4]
+    fixture = (repository_root / "tests/integration/test_mysql_payroll_processing.py").read_text(
+        encoding="utf-8"
+    )
+    seed_body = fixture.split("def _seed_valid_payroll", maxsplit=1)[1].split(
+        "def _cleanup_seed", maxsplit=1
+    )[0]
+    cleanup_body = fixture.split("def _cleanup_seed", maxsplit=1)[1].split(
+        "def _delete_owned_audit_events", maxsplit=1
+    )[0]
+
+    assert 'select(Role).where(Role.role_name == "HR Administrator")' in seed_body
+    assert '_get_or_create_permission(\n            session, "report.employee.read", "Employee report read"' in seed_body
+    assert "role_id=hr_role.role_id" in seed_body
+    assert "permission_id=hr_permission.permission_id" in seed_body
+    assert 'role_id=role.role_id, permission_id=item.permission_id' in seed_body
+    assert "created_hr_role_permission" in cleanup_body
+    assert "seed.created_hr_role" in cleanup_body
+    assert "session.execute(delete(UserRole).where(UserRole.user_id.in_(owned_user_ids)))" in cleanup_body
+    assert "(hr_permission, created_hr_permission)" in seed_body
+    assert "seed.created_permission_ids" in cleanup_body
+
+
 class _ScalarResult:
     def __init__(self, values: list[int]) -> None:
         self.values = values

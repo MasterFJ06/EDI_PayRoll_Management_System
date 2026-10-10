@@ -29,6 +29,11 @@ class SeededPayroll:
     role_id: int
     created_role: bool
     created_role_permission_ids: tuple[int, ...]
+    hr_role_id: int
+    created_hr_role: bool
+    created_hr_role_permission: bool
+    hr_permission_id: int
+    created_hr_permission: bool
     permission_id: int
     finalize_permission_id: int
     payslip_permission_id: int
@@ -792,7 +797,6 @@ def test_employee_report_uses_seeded_hr_permission_and_filters_persisted_rows(
     from app.infrastructure.persistence.models.department import Department
     from app.infrastructure.persistence.models.designation import Designation
     from app.infrastructure.persistence.models.employee import Employee
-    from app.infrastructure.persistence.models.permission import Permission
     from app.infrastructure.persistence.models.role import Role
     from app.infrastructure.persistence.models.role_permission import RolePermission
     from app.infrastructure.persistence.models.user import User
@@ -1095,6 +1099,12 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
         created_role = role is None
         if role is None:
             role = Role(role_name="Payroll Administrator", is_active=True)
+        hr_role = session.scalar(
+            select(Role).where(Role.role_name == "HR Administrator")
+        )
+        created_hr_role = hr_role is None
+        if hr_role is None:
+            hr_role = Role(role_name="HR Administrator", is_active=True)
         permission, created_permission = _get_or_create_permission(
             session, "payroll.run.process", "R6 test"
         )
@@ -1106,6 +1116,9 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
         )
         report_permission, created_report_permission = _get_or_create_permission(
             session, "report.payroll.read", "Payroll summary read"
+        )
+        hr_permission, created_hr_permission = _get_or_create_permission(
+            session, "report.employee.read", "Employee report read"
         )
         department = Department(
             department_code=f"R6D{marker}", department_name=f"R6 Department {marker}", status="ACTIVE"
@@ -1122,6 +1135,8 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
         session.add_all([user, department, designation, structure, component])
         if created_role:
             session.add(role)
+        if created_hr_role:
+            session.add(hr_role)
         session.flush()
         session.add(
             UserRole(
@@ -1142,6 +1157,16 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
                     RolePermission(role_id=role.role_id, permission_id=item.permission_id)
                 )
                 created_role_permission_ids.append(item.permission_id)
+        created_hr_role_permission = session.get(
+            RolePermission, (hr_role.role_id, hr_permission.permission_id)
+        ) is None
+        if created_hr_role_permission:
+            session.add(
+                RolePermission(
+                    role_id=hr_role.role_id,
+                    permission_id=hr_permission.permission_id,
+                )
+            )
         employee = Employee(
             employee_code=f"R6E{marker}", user_id=None, first_name="Test", last_name=marker,
             department_id=department.department_id, designation_id=designation.designation_id,
@@ -1220,6 +1245,11 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
             role_id=role.role_id,
             created_role=created_role,
             created_role_permission_ids=tuple(created_role_permission_ids),
+            hr_role_id=hr_role.role_id,
+            created_hr_role=created_hr_role,
+            created_hr_role_permission=created_hr_role_permission,
+            hr_permission_id=hr_permission.permission_id,
+            created_hr_permission=created_hr_permission,
             permission_id=permission.permission_id,
             finalize_permission_id=finalize_permission.permission_id,
             payslip_permission_id=payslip_permission.permission_id,
@@ -1231,6 +1261,7 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
                     (finalize_permission, created_finalize_permission),
                     (payslip_permission, created_payslip_permission),
                     (report_permission, created_report_permission),
+                    (hr_permission, created_hr_permission),
                 )
                 if created
             ),
@@ -1323,7 +1354,14 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
                     RolePermission.permission_id.in_(seed.created_role_permission_ids),
                 )
             )
-        session.execute(delete(UserRole).where(UserRole.user_id == seed.user_id))
+        if seed.created_hr_role_permission:
+            session.execute(
+                delete(RolePermission).where(
+                    RolePermission.role_id == seed.hr_role_id,
+                    RolePermission.permission_id == seed.hr_permission_id,
+                )
+            )
+        session.execute(delete(UserRole).where(UserRole.user_id.in_(owned_user_ids)))
         if seed.created_permission_ids:
             referenced_permission_ids = set(
                 session.scalars(
@@ -1343,6 +1381,8 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
                 )
         if seed.created_role:
             session.execute(delete(Role).where(Role.role_id == seed.role_id))
+        if seed.created_hr_role:
+            session.execute(delete(Role).where(Role.role_id == seed.hr_role_id))
         session.execute(delete(User).where(User.user_id.in_(owned_user_ids)))
 
 
