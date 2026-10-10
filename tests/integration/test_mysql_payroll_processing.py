@@ -34,6 +34,8 @@ class SeededPayroll:
     created_hr_role_permission: bool
     hr_permission_id: int
     created_hr_permission: bool
+    attendance_report_permission_id: int
+    created_hr_attendance_role_permission: bool
     permission_id: int
     finalize_permission_id: int
     payslip_permission_id: int
@@ -827,8 +829,12 @@ def test_employee_report_uses_seeded_hr_permission_and_filters_persisted_rows(
             select(Permission.permission_code)
             .join(RolePermission, RolePermission.permission_id == Permission.permission_id)
             .where(RolePermission.role_id == hr_role.role_id)
+            .order_by(Permission.permission_code)
         ).all()
-        assert hr_permission_codes == ["report.employee.read"]
+        assert hr_permission_codes == [
+            "report.attendance.read",
+            "report.employee.read",
+        ]
 
         hr_user = User(
             username=username,
@@ -956,6 +962,178 @@ def test_employee_report_uses_seeded_hr_permission_and_filters_persisted_rows(
             headers=hr_headers,
         )
         assert mismatch.status_code == 422
+
+
+def test_attendance_report_uses_hr_permission_filters_rows_and_paginates_same_date(
+    real_mysql_payroll,
+) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.attendance import AttendanceRecord
+    from app.infrastructure.persistence.models.audit_event import AuditEventModel
+    from app.infrastructure.persistence.models.employee import Employee
+    from app.infrastructure.persistence.models.permission import Permission
+    from app.infrastructure.persistence.models.role import Role
+    from app.infrastructure.persistence.models.role_permission import RolePermission
+    from app.infrastructure.persistence.models.user import User
+    from app.infrastructure.persistence.models.user_role import UserRole
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    username = f"r9c2_hr_{uuid4().hex[:12]}"
+    day = date(2025, 1, 2)
+    unprivileged_user_id, unprivileged_username = _add_report_unprivileged_user(
+        engine, seed
+    )
+    with Session(engine) as session:
+        hr_role = session.scalar(
+            select(Role).where(Role.role_name == "HR Administrator")
+        )
+        assert hr_role is not None
+        hr_permission_codes = session.scalars(
+            select(Permission.permission_code)
+            .join(RolePermission, RolePermission.permission_id == Permission.permission_id)
+            .where(RolePermission.role_id == hr_role.role_id)
+            .order_by(Permission.permission_code)
+        ).all()
+        assert hr_permission_codes == [
+            "report.attendance.read",
+            "report.employee.read",
+        ]
+        payroll_codes = session.scalars(
+            select(Permission.permission_code)
+            .join(RolePermission, RolePermission.permission_id == Permission.permission_id)
+            .where(RolePermission.role_id == seed.role_id)
+        ).all()
+        assert "report.attendance.read" not in payroll_codes
+
+        hr_user = User(
+            username=username,
+            email=f"{username}@example.invalid",
+            password_hash="integration-only-not-used-for-login",
+            status="ACTIVE",
+        )
+        employees = [
+            Employee(
+                employee_code=f"R9C2-{uuid4().hex[:12]}",
+                user_id=None,
+                first_name=first_name,
+                last_name=last_name,
+                department_id=seed.department_id,
+                designation_id=seed.designation_id,
+                joining_date=date(2019, 1, 1),
+                employment_end_date=None,
+                employment_status="ACTIVE",
+            )
+            for first_name, last_name in (("Present", "Report"), ("Absent", "Report"))
+        ]
+        session.add_all([hr_user, *employees])
+        session.flush()
+        session.add(
+            UserRole(
+                user_id=hr_user.user_id,
+                role_id=hr_role.role_id,
+                assigned_by_user_id=seed.user_id,
+            )
+        )
+        attendance_rows = [
+            AttendanceRecord(
+                employee_id=employees[0].employee_id,
+                attendance_date=day,
+                attendance_status="PRESENT",
+                check_in_time=None,
+                check_out_time=None,
+            ),
+            AttendanceRecord(
+                employee_id=employees[1].employee_id,
+                attendance_date=day,
+                attendance_status="ABSENT",
+                check_in_time=datetime.combine(day, time(9, 0)),
+                check_out_time=None,
+            ),
+        ]
+        session.add_all(attendance_rows)
+        session.commit()
+        hr_user_id = hr_user.user_id
+        seed.extra_users += ((hr_user_id, username),)
+        seed.extra_employee_ids += tuple(employee.employee_id for employee in employees)
+        attendance_ids = [row.attendance_id for row in attendance_rows]
+
+    with Session(engine) as session:
+        audit_count_before = session.scalar(
+            select(func.count()).select_from(AuditEventModel)
+        )
+
+    hr_headers = {
+        "Authorization": f"Bearer {create_access_token(hr_user_id, username)}"
+    }
+    payroll_headers = {
+        "Authorization": f"Bearer {create_access_token(seed.user_id, seed.username)}"
+    }
+    unprivileged_headers = {
+        "Authorization": f"Bearer {create_access_token(unprivileged_user_id, unprivileged_username)}"
+    }
+    with TestClient(app, raise_server_exceptions=False) as client:
+        payroll_denied = client.get(
+            "/api/v1/reports/attendance", headers=payroll_headers
+        )
+        assert payroll_denied.status_code == 403, payroll_denied.text
+        unprivileged_denied = client.get(
+            "/api/v1/reports/attendance", headers=unprivileged_headers
+        )
+        assert unprivileged_denied.status_code == 403, unprivileged_denied.text
+
+        params = {
+            "date_from": day.isoformat(),
+            "date_to": day.isoformat(),
+            "department_id": seed.department_id,
+            "limit": 1,
+        }
+        first = client.get(
+            "/api/v1/reports/attendance", params=params, headers=hr_headers
+        )
+        assert first.status_code == 200, first.text
+        first_body = first.json()
+        assert first_body["pagination"]["has_more"] is True
+        first_row = first_body["attendance_records"][0]
+        assert first_row["attendance_id"] == min(attendance_ids)
+        assert first_row["attendance_date"] == day.isoformat()
+        assert set(first_row) == {
+            "attendance_id", "employee_id", "employee_code", "first_name", "last_name",
+            "department_id", "department_name", "designation_id", "designation_name",
+            "attendance_date", "attendance_status", "check_in_time", "check_out_time",
+        }
+
+        second = client.get(
+            "/api/v1/reports/attendance",
+            params={**params, "cursor": first_body["pagination"]["next_cursor"]},
+            headers=hr_headers,
+        )
+        assert second.status_code == 200, second.text
+        second_body = second.json()
+        assert second_body["pagination"]["has_more"] is False
+        second_row = second_body["attendance_records"][0]
+        assert second_row["attendance_id"] == max(attendance_ids)
+        assert second_row["attendance_date"] == day.isoformat()
+        assert second_row["check_in_time"] == "2025-01-02T09:00:00"
+        assert second_row["check_out_time"] is None
+        assert first_row["check_in_time"] is None
+        assert first_row["check_out_time"] is None
+
+        filtered = client.get(
+            "/api/v1/reports/attendance",
+            params={**params, "attendance_status": "ABSENT"},
+            headers=hr_headers,
+        )
+        assert filtered.status_code == 200, filtered.text
+        assert [row["attendance_status"] for row in filtered.json()["attendance_records"]] == [
+            "ABSENT"
+        ]
+
+    with Session(engine) as session:
+        audit_count_after = session.scalar(
+            select(func.count()).select_from(AuditEventModel)
+        )
+    assert audit_count_after == audit_count_before
 
 
 def _add_report_employee(engine, seed: SeededPayroll) -> None:
@@ -1121,6 +1299,13 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
         hr_permission, created_hr_permission = _get_or_create_permission(
             session, "report.employee.read", "Employee report read"
         )
+        attendance_report_permission, created_attendance_report_permission = (
+            _get_or_create_permission(
+                session,
+                "report.attendance.read",
+                "Attendance report read",
+            )
+        )
         department = Department(
             department_code=f"R6D{marker}", department_name=f"R6 Department {marker}", status="ACTIVE"
         )
@@ -1166,6 +1351,17 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
                 RolePermission(
                     role_id=hr_role.role_id,
                     permission_id=hr_permission.permission_id,
+                )
+            )
+        created_hr_attendance_role_permission = session.get(
+            RolePermission,
+            (hr_role.role_id, attendance_report_permission.permission_id),
+        ) is None
+        if created_hr_attendance_role_permission:
+            session.add(
+                RolePermission(
+                    role_id=hr_role.role_id,
+                    permission_id=attendance_report_permission.permission_id,
                 )
             )
         employee = Employee(
@@ -1251,6 +1447,8 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
             created_hr_role_permission=created_hr_role_permission,
             hr_permission_id=hr_permission.permission_id,
             created_hr_permission=created_hr_permission,
+            attendance_report_permission_id=attendance_report_permission.permission_id,
+            created_hr_attendance_role_permission=created_hr_attendance_role_permission,
             permission_id=permission.permission_id,
             finalize_permission_id=finalize_permission.permission_id,
             payslip_permission_id=payslip_permission.permission_id,
@@ -1263,6 +1461,10 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
                     (payslip_permission, created_payslip_permission),
                     (report_permission, created_report_permission),
                     (hr_permission, created_hr_permission),
+                    (
+                        attendance_report_permission,
+                        created_attendance_report_permission,
+                    ),
                 )
                 if created
             ),
@@ -1360,6 +1562,14 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
                 delete(RolePermission).where(
                     RolePermission.role_id == seed.hr_role_id,
                     RolePermission.permission_id == seed.hr_permission_id,
+                )
+            )
+        if seed.created_hr_attendance_role_permission:
+            session.execute(
+                delete(RolePermission).where(
+                    RolePermission.role_id == seed.hr_role_id,
+                    RolePermission.permission_id
+                    == seed.attendance_report_permission_id,
                 )
             )
         session.execute(delete(UserRole).where(UserRole.user_id.in_(owned_user_ids)))

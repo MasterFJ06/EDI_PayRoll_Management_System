@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
@@ -66,3 +66,32 @@ class EmployeeReportPagination(BaseModel):
 class EmployeeReportPage(BaseModel):
     employees: list[EmployeeReportRow]
     pagination: EmployeeReportPagination
+
+
+class AttendanceReportRow(BaseModel):
+    attendance_id: int
+    employee_id: int
+    employee_code: str
+    first_name: str
+    last_name: str
+    department_id: int
+    department_name: str | None
+    designation_id: int
+    designation_name: str | None
+    attendance_date: date
+    attendance_status: Literal[
+        "PRESENT", "ABSENT", "HALF_DAY", "ON_LEAVE", "HOLIDAY"
+    ]
+    check_in_time: datetime | None
+    check_out_time: datetime | None
+
+
+class AttendanceReportPagination(BaseModel):
+    limit: int = Field(ge=1, le=100)
+    has_more: bool
+    next_cursor: str | None
+
+
+class AttendanceReportPage(BaseModel):
+    attendance_records: list[AttendanceReportRow]
+    pagination: AttendanceReportPagination

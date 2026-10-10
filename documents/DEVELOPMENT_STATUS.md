@@ -721,3 +721,16 @@ filter-bound HMAC cursor. No schema change, migration, or index was added.
 
 Local validation and strict ephemeral MySQL 8 GitHub Actions validation are
 pending. No live MySQL result is claimed.
+
+## Reporting & Analytics — Phase 2B-9C-2 Attendance Report
+
+Implemented `GET /api/v1/reports/attendance` with the persisted
+`report.attendance.read` permission assigned to the HR Administrator role.
+The report supports inclusive date filters and optional employee, department,
+and attendance-status filters, with bounded, filter-bound HMAC keyset
+pagination. Employee, department, and designation labels come from current
+master data. Focused local reporting, repository, RBAC-seed, and fixture tests:
+31 passed with one Starlette deprecation warning. The Attendance Report API
+TestClient run stalled without output in the local Windows environment and was
+interrupted. Strict ephemeral MySQL 8 integration validation remains pending;
+no live result is claimed.

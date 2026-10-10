@@ -536,8 +536,42 @@ filters. Each query fetches at most `limit + 1` rows. `pagination` contains
 `limit`, `has_more`, and nullable `next_cursor`. There is no offset pagination
 or separate total-count query. This endpoint does not produce an audit event.
 
-Attendance, leave, dashboard, export, and employee self-service reports remain
-deferred.
+Leave, dashboard, export, and employee self-service reports remain deferred.
+
+### Phase 2B-9C-2 — Organization-Wide Attendance Report
+
+`GET /api/v1/reports/attendance` requires authentication and the persisted
+`report.attendance.read` permission, assigned only to `HR Administrator`.
+This permission is separate from `report.employee.read` and is not assigned to
+Payroll Administrator. Missing or invalid authentication returns HTTP 401;
+authenticated users without this permission receive HTTP 403. Invalid query
+parameters or cursors return HTTP 422. The read-only endpoint does not emit a
+report-read audit event.
+
+The response contains `attendance_records` and `pagination`. Each attendance
+record contains exactly `attendance_id`, `employee_id`, `employee_code`,
+`first_name`, `last_name`, `department_id`, `department_name`,
+`designation_id`, `designation_name`, `attendance_date`,
+`attendance_status`, `check_in_time`, and `check_out_time`. Attendance fields
+are persisted facts. Employee names, employee code, and department/designation
+labels use current master data and are not historical labels. Department and
+designation names may be null. `check_in_time` and `check_out_time` preserve
+their nullable database values; a null timestamp is not interpreted. The
+report excludes user IDs, manager IDs, contact data, credentials, and security
+fields. It does not calculate hours, lateness, absenteeism, overtime, Leave
+entitlement, or payroll impact.
+
+Optional filters are inclusive `date_from` and `date_to`, positive
+`employee_id` and `department_id`, and `attendance_status` (`PRESENT`,
+`ABSENT`, `HALF_DAY`, `ON_LEAVE`, or `HOLIDAY`). `date_from` later than
+`date_to` is invalid. There is no fixed maximum date span. Unknown employee or
+department IDs produce an empty page if no rows match. `limit` defaults to 50
+and accepts 1 through 100. Rows are ordered by ascending
+`attendance_date`, then `attendance_id`; queries fetch at most `limit + 1`
+rows. The deterministic HMAC-SHA256 protected opaque cursor is specific to
+this report and bound to the active filters and last returned date/ID pair.
+Malformed, tampered, wrong-report, or filter-mismatched cursors return HTTP
+422. There is no offset pagination or total-count query.
 
 ---
 

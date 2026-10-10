@@ -14,6 +14,7 @@ from app.api.v1.endpoints.reports import (
     employee_report_router,
     router as reports_router,
 )
+from app.api.v1.endpoints.attendance_reports import router as attendance_reports_router
 
 api_router = APIRouter()
 
@@ -29,3 +30,4 @@ api_router.include_router(work_calendar_router)
 api_router.include_router(overtime_policy_router)
 api_router.include_router(reports_router)
 api_router.include_router(employee_report_router)
+api_router.include_router(attendance_reports_router)

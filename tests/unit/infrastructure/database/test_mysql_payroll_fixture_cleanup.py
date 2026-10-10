@@ -33,6 +33,7 @@ def test_runtime_workflow_leaves_rbac_seeding_to_the_integration_fixture() -> No
     assert "is not empty before seeding" in schema_guard
     assert "VALUES ('HR Administrator', 'Administration of employee reporting.')" in production_seed
     assert "p.permission_code = 'report.employee.read'" in production_seed
+    assert "p.permission_code = 'report.attendance.read'" in production_seed
 
 
 def test_employee_report_fixture_seeds_and_cleans_only_hr_employee_read_access() -> None:
@@ -56,6 +57,8 @@ def test_employee_report_fixture_seeds_and_cleans_only_hr_employee_read_access()
     assert "seed.created_hr_role" in cleanup_body
     assert "session.execute(delete(UserRole).where(UserRole.user_id.in_(owned_user_ids)))" in cleanup_body
     assert "(hr_permission, created_hr_permission)" in seed_body
+    assert "created_hr_attendance_role_permission" in seed_body
+    assert "seed.created_hr_attendance_role_permission" in cleanup_body
     assert "seed.created_permission_ids" in cleanup_body
 
 

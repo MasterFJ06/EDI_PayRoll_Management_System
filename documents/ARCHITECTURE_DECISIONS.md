@@ -810,3 +810,50 @@ Attendance reports, leave reports, dashboards, exports, payroll reports,
 employee self-service, and historical labels remain outside this decision.
 This decision adds no table, column, index, migration, calculation, or audit
 event.
+
+---
+
+# Decision 42 — Organization-Wide Attendance Report
+
+The read-only attendance report is available at
+`GET /api/v1/reports/attendance`. Access requires authentication and the
+persisted `report.attendance.read` permission. The development seed assigns
+this permission only to the `HR Administrator` role. It remains distinct from
+`report.employee.read` and all Payroll Administrator permissions; no user is
+assigned to a role by seed data. The report does not emit a report-read audit
+event.
+
+Each row contains exactly `attendance_id`, `employee_id`, `employee_code`,
+`first_name`, `last_name`, `department_id`, `department_name`,
+`designation_id`, `designation_name`, `attendance_date`,
+`attendance_status`, `check_in_time`, and `check_out_time`. Attendance facts
+come from persisted `attendance_records`. Employee names, employee code, and
+organizational labels are read from current Employee, Department, and
+Designation master data; they are not historical snapshots. Department and
+designation labels may be null when unavailable. Check-in and check-out values
+preserve nullable persisted timestamps. Null timestamps do not imply any
+attendance status or worked duration. No credentials, contact information,
+user or manager identifiers, or security data are returned.
+
+Optional filters are inclusive `date_from` and `date_to`, positive exact
+`employee_id` and `department_id`, and `attendance_status` restricted to
+`PRESENT`, `ABSENT`, `HALF_DAY`, `ON_LEAVE`, or `HOLIDAY`. A range where
+`date_from` is later than `date_to` is invalid. Unknown employee or department
+IDs return an empty page when no attendance row matches. There is no fixed
+maximum date-range span. The report returns persisted attendance facts only;
+it does not derive hours worked, lateness, absenteeism, overtime, Leave
+entitlement, or payroll effects, and it does not reinterpret stored statuses.
+
+The report uses keyset pagination ordered by ascending
+`(attendance_date, attendance_id)`, with a default page limit of 50 and an
+allowed range of 1 through 100. Each query fetches at most `limit + 1` rows;
+there is no offset pagination or unbounded total-count query. The deterministic
+base64url cursor is signed with HMAC-SHA256 using the configured application
+signing key, has an attendance-report-specific discriminator, and is bound to
+all active filters and the last returned date/ID pair. Malformed, tampered,
+wrong-report, or filter-mismatched cursors are rejected with HTTP 422.
+
+The existing attendance date index and employee/date unique key support the
+report's date and employee access paths. This decision adds no table, column,
+index, migration, calculation, or audit event. A new index requires
+demonstrated query-plan and workload evidence.

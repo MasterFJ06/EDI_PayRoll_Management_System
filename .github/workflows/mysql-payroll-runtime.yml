@@ -62,6 +62,9 @@ jobs:
       - name: Run employee report API contract tests
         run: python -m pytest -q tests/api/test_employee_report.py
 
+      - name: Run attendance report API contract tests
+        run: python -m pytest -q tests/api/test_attendance_report.py
+
       - name: Prepare snapshot for the isolated test database
         shell: bash
         run: |
@@ -94,7 +97,7 @@ jobs:
           test "$target" = $'8\tepms_r7_runtime_test'
           echo "Verified MySQL target: $target"
 
-      - name: Run nineteen strict payroll and employee report MySQL integration tests (serial)
+      - name: Run twenty strict payroll, employee, and attendance report MySQL integration tests (serial)
         run: python -m pytest -q tests/integration/test_mysql_payroll_processing.py
 
       - name: Run focused offline MySQL safety tests
