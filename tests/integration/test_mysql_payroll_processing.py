@@ -15,7 +15,7 @@ from uuid import uuid4
 
 import pytest
 from concurrent.futures import ThreadPoolExecutor
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 from fastapi.testclient import TestClient
 
@@ -30,6 +30,7 @@ class SeededPayroll:
     permission_id: int
     finalize_permission_id: int
     payslip_permission_id: int
+    created_permission_ids: tuple[int, ...]
     salary_structure_id: int
     salary_component_id: int
     salary_revision_id: int
@@ -610,7 +611,6 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
     from app.infrastructure.persistence.models.designation import Designation
     from app.infrastructure.persistence.models.employee import Employee
     from app.infrastructure.persistence.models.payroll_run import PayrollRunModel
-    from app.infrastructure.persistence.models.permission import Permission
     from app.infrastructure.persistence.models.role import Role
     from app.infrastructure.persistence.models.role_permission import RolePermission
     from app.infrastructure.persistence.models.salary_component import SalaryComponentModel
@@ -638,12 +638,14 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
             status="ACTIVE",
         )
         role = Role(role_name=f"R6 Test Payroll {marker}", is_active=True)
-        permission = Permission(permission_code="payroll.run.process", description="R6 test")
-        finalize_permission = Permission(
-            permission_code="payroll.run.finalize", description="R7 test"
+        permission, created_permission = _get_or_create_permission(
+            session, "payroll.run.process", "R6 test"
         )
-        payslip_permission = Permission(
-            permission_code="payroll.payslip.create", description="R8 test"
+        finalize_permission, created_finalize_permission = _get_or_create_permission(
+            session, "payroll.run.finalize", "R7 test"
+        )
+        payslip_permission, created_payslip_permission = _get_or_create_permission(
+            session, "payroll.payslip.create", "R8 test"
         )
         department = Department(
             department_code=f"R6D{marker}", department_name=f"R6 Department {marker}", status="ACTIVE"
@@ -657,7 +659,7 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
         component = SalaryComponentModel(
             component_code=f"R6C{marker}", component_name=f"R6 Base {marker}", component_type="EARNING", status="ACTIVE"
         )
-        session.add_all([user, role, permission, finalize_permission, payslip_permission, department, designation, structure, component])
+        session.add_all([user, role, department, designation, structure, component])
         session.flush()
         session.add_all([
             UserRole(user_id=user.user_id, role_id=role.role_id, assigned_by_user_id=user.user_id),
@@ -744,6 +746,15 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
             permission_id=permission.permission_id,
             finalize_permission_id=finalize_permission.permission_id,
             payslip_permission_id=payslip_permission.permission_id,
+            created_permission_ids=tuple(
+                item.permission_id
+                for item, created in (
+                    (permission, created_permission),
+                    (finalize_permission, created_finalize_permission),
+                    (payslip_permission, created_payslip_permission),
+                )
+                if created
+            ),
             salary_structure_id=structure.salary_structure_id,
             salary_component_id=component.salary_component_id,
             salary_revision_id=revision.salary_revision_id,
@@ -797,6 +808,7 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
             AuditEventChangeModel,
             seed.payroll_run_id,
             owned_payslip_ids,
+            seed.user_id,
         )
         session.execute(delete(PayslipModel).where(
             PayslipModel.payslip_id.in_(owned_payslip_ids)
@@ -820,7 +832,23 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
         session.execute(delete(Designation).where(Designation.designation_id == seed.designation_id))
         session.execute(delete(RolePermission).where(RolePermission.role_id == seed.role_id))
         session.execute(delete(UserRole).where(UserRole.user_id == seed.user_id))
-        session.execute(delete(Permission).where(Permission.permission_id.in_([seed.permission_id, seed.finalize_permission_id, seed.payslip_permission_id])))
+        if seed.created_permission_ids:
+            referenced_permission_ids = set(
+                session.scalars(
+                    select(RolePermission.permission_id).where(
+                        RolePermission.permission_id.in_(seed.created_permission_ids)
+                    )
+                ).all()
+            )
+            unused_created_permission_ids = (
+                set(seed.created_permission_ids) - referenced_permission_ids
+            )
+            if unused_created_permission_ids:
+                session.execute(
+                    delete(Permission).where(
+                        Permission.permission_id.in_(unused_created_permission_ids)
+                    )
+                )
         session.execute(delete(Role).where(Role.role_id == seed.role_id))
         session.execute(delete(User).where(User.user_id == seed.user_id))
 
@@ -831,20 +859,29 @@ def _delete_owned_audit_events(
     audit_event_change_model,
     payroll_run_id: int,
     payslip_ids: list[int] | None = None,
+    actor_user_id: int | None = None,
 ) -> list[int]:
-    """Delete this fixture run's audit rows without a MySQL self-select DELETE."""
+    """Delete only fixture-owned audit rows without a MySQL self-select DELETE."""
     conditions = [
-        (audit_event_model.resource_type == "PAYROLL_RUN")
-        & (audit_event_model.resource_id == payroll_run_id)
+        and_(
+            audit_event_model.resource_type == "PAYROLL_RUN",
+            audit_event_model.resource_id == payroll_run_id,
+        )
     ]
     if payslip_ids:
         conditions.append(
-            (audit_event_model.resource_type == "PAYSLIP")
-            & audit_event_model.resource_id.in_(payslip_ids)
+            and_(
+                audit_event_model.resource_type == "PAYSLIP",
+                audit_event_model.resource_id.in_(payslip_ids),
+            )
         )
+    if actor_user_id is not None:
+        # The fixture creates a unique synthetic user and all endpoint-generated
+        # audit events for that identity are owned by this fixture.
+        conditions.append(audit_event_model.actor_user_id == actor_user_id)
     audit_ids = list(
         session.scalars(
-            select(audit_event_model.audit_event_id).where(*conditions)
+            select(audit_event_model.audit_event_id).where(or_(*conditions))
         ).all()
     )
     if audit_ids:
@@ -859,3 +896,18 @@ def _delete_owned_audit_events(
             )
         )
     return audit_ids
+
+
+def _get_or_create_permission(session: Session, code: str, description: str):
+    """Reuse shared permissions and report whether this fixture owns a new row."""
+    from app.infrastructure.persistence.models.permission import Permission
+
+    permission = session.scalar(
+        select(Permission).where(Permission.permission_code == code)
+    )
+    if permission is not None:
+        return permission, False
+    permission = Permission(permission_code=code, description=description)
+    session.add(permission)
+    session.flush()
+    return permission, True
