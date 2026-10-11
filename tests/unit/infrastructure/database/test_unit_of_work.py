@@ -14,6 +14,7 @@ def test_leave_repositories_share_unit_of_work_session_and_are_released() -> Non
         assert uow.leave_types.session is session
         assert uow.leave_balances.session is session
         assert uow.leave_requests.session is session
+        assert uow.leave_reports.session is session
 
         uow.__exit__(None, None, None)
 
@@ -22,3 +23,4 @@ def test_leave_repositories_share_unit_of_work_session_and_are_released() -> Non
     assert uow.leave_types is None
     assert uow.leave_balances is None
     assert uow.leave_requests is None
+    assert uow.leave_reports is None

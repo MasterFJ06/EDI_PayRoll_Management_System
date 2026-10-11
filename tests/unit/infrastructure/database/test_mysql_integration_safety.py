@@ -15,10 +15,20 @@ from tests.integration.mysql_support import (
     _schema_differences,
     _schema_difference_error,
     _parse_columns_and_constraints,
+    _REQUIRED_PATH_TABLES,
     mysql_test_url_from_environment,
     parse_mysql_test_url,
     parse_schema_snapshot,
 )
+
+
+def test_required_snapshot_tables_cover_leave_report_path() -> None:
+    assert {
+        "leave_types",
+        "leave_requests",
+        "leave_request_days",
+        "leave_balances",
+    }.issubset(_REQUIRED_PATH_TABLES)
 
 
 @pytest.mark.parametrize(

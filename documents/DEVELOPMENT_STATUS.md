@@ -734,3 +734,27 @@ master data. Focused local reporting, repository, RBAC-seed, and fixture tests:
 TestClient run stalled without output in the local Windows environment and was
 interrupted. Strict ephemeral MySQL 8 integration validation remains pending;
 no live result is claimed.
+
+## Reporting & Analytics — Phase 2B-9C-3 Leave Reports Contract
+
+The organization-wide Leave allocation and balance report contracts are
+approved for `GET /api/v1/reports/leave/allocations` and
+`GET /api/v1/reports/leave/balances`. Both require the dedicated
+`report.leave.read` permission assigned only to HR Administrator. The
+allocation report is per persisted date allocation; the balance report
+returns stored balance values without deriving remaining days or reconciling
+against requests. Both use bounded, filter-bound HMAC keyset pagination and
+current master-data labels. Each page reflects current persisted state, with
+no cross-page snapshot guarantee. The `leave_request_days` table has no
+date-leading index; any index proposal requires query-plan and workload
+evidence. No schema, migration, or index change is authorized. Phase 3 has
+implemented both authenticated endpoints and the persisted `report.leave.read`
+permission for HR Administrator only. Local service, repository, Unit of Work,
+and seed tests passed; local API TestClient execution stalled in the Windows
+environment. No live MySQL validation is claimed.
+
+Phase 4 adds isolated MySQL integration coverage for persisted Leave report
+authorization, allocation and balance filtering/pagination, and cursor errors.
+The strict serial integration inventory is 25 tests, and the workflow runs the
+Leave report API contract tests. Local collection and offline checks pass;
+ephemeral MySQL 8 runtime validation remains pending.

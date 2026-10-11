@@ -536,7 +536,7 @@ filters. Each query fetches at most `limit + 1` rows. `pagination` contains
 `limit`, `has_more`, and nullable `next_cursor`. There is no offset pagination
 or separate total-count query. This endpoint does not produce an audit event.
 
-Leave, dashboard, export, and employee self-service reports remain deferred.
+Dashboard, export, and employee self-service reports remain deferred.
 
 ### Phase 2B-9C-2 — Organization-Wide Attendance Report
 
@@ -573,6 +573,68 @@ this report and bound to the active filters and last returned date/ID pair.
 Malformed, tampered, wrong-report, or filter-mismatched cursors return HTTP
 422. There is no offset pagination or total-count query.
 
+### Phase 2B-9C-3 — Organization-Wide Leave Reports
+
+Both Leave reports require authentication and the persisted
+`report.leave.read` permission, assigned only to `HR Administrator`. Access is
+organization-wide; there is no employee-self-service or manager-scoped
+behavior. Payroll Administrator permissions remain separate. Authentication
+and permission failures return HTTP 401 and 403. Invalid filters, limits, or
+cursors return HTTP 422. The reports do not emit report-read audit events.
+
+#### `GET /api/v1/reports/leave/allocations`
+
+The response contains `allocations` and `pagination`. Each allocation contains
+exactly `leave_request_id`, `leave_request_day_id`, `employee_id`,
+`employee_code`, `first_name`, `last_name`, `department_id`,
+`department_name`, `designation_id`, `designation_name`, `leave_type_id`,
+`leave_type_name`, `start_date`, `end_date`, `requested_days`, `status`,
+`leave_date`, and `day_fraction`. Allocation and request values come from
+persisted Leave records. Employee, department, designation, and Leave Type
+labels use current master data and are not historical snapshots. Request
+reasons, reviewer comments and identifiers, payroll treatment, credentials,
+contact details, and security fields are excluded. `requested_days` repeats
+for every allocation and must not be summed across rows as a request total.
+
+Optional exact filters are inclusive `date_from` and `date_to` on allocation
+`leave_date`, positive `employee_id`, `department_id`, and `leave_type_id`, and
+request `status`. All `PENDING`, `APPROVED`, `REJECTED`, and `CANCELLED`
+allocations are included by default. A reversed date range or invalid status
+returns HTTP 422. Unknown IDs return an empty page if no row matches.
+
+#### `GET /api/v1/reports/leave/balances`
+
+The response contains `balances` and `pagination`. Each balance contains
+exactly `employee_id`, `employee_code`, `first_name`, `last_name`,
+`department_id`, `department_name`, `designation_id`, `designation_name`,
+`leave_type_id`, `leave_type_name`, `balance_year`, `allocated_days`, and
+`used_days`. It returns one row per unique
+`(employee_id, leave_type_id, balance_year)`. Balance amounts and year are
+returned as persisted. The report includes inactive and terminated employees
+by default; it does not calculate remaining days, reconcile values against
+Leave Request allocations, or characterize `balance_year` as a calendar or
+employment year. Optional exact filters are positive `employee_id`,
+`department_id`, and `leave_type_id`, plus stored `balance_year`.
+`balance_year` must be in the schema-supported range 0 through 65535.
+
+Both reports use keyset pagination with `limit` defaulting to 50 and accepting
+1 through 100. Allocation ordering is ascending `(leave_date,
+leave_request_day_id)`; balance ordering is ascending
+`(employee_id, leave_type_id, balance_year)`. Each query fetches at most
+`limit + 1` rows. Deterministic opaque HMAC-SHA256-protected cursors are bound
+to their report, all active filters, and the last returned key. The cursor
+formats are distinct per report. Pagination contains `limit`, `has_more`, and
+nullable `next_cursor`; there is no offset pagination, unbounded total-count
+query, or cross-page snapshot guarantee. Each page reflects current persisted
+state.
+
+The `leave_request_days` table has no date-leading index. A bounded result
+page does not bound rows scanned or sorted for date-filtered allocation
+queries. Query-plan and workload evidence is required before proposing an
+index. This reporting contract adds no schema, migration, or index and does
+not change Leave accounting, lifecycle, remaining-balance semantics, or
+existing Leave creation authorization.
+
 ---
 
 # Authentication
@@ -601,8 +663,10 @@ The development seed catalog includes the `Payroll Administrator` role and
 granular permissions `payroll.run.create`, `payroll.run.read`,
 `payroll.run.process`, `payroll.run.retry`, `payroll.run.finalize`,
 `payroll.payslip.create`, and `report.payroll.read`, plus the
-`HR Administrator` role with only `report.employee.read`. No user is assigned
-to either role by the seed data. Implemented Payroll Run operations are
+`HR Administrator` role with `report.employee.read` and
+`report.attendance.read`. The approved `report.leave.read` permission and HR
+role assignment are pending implementation. No user is assigned to either
+role by the seed data. Implemented Payroll Run operations are
 documented in the Phase 2A, Phase 2B-1, retry, and finalization sections above.
 Individual payslip record generation is implemented without document
 generation; payslip read/download operations remain unimplemented.

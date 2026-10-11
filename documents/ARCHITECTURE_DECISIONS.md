@@ -857,3 +857,65 @@ The existing attendance date index and employee/date unique key support the
 report's date and employee access paths. This decision adds no table, column,
 index, migration, calculation, or audit event. A new index requires
 demonstrated query-plan and workload evidence.
+
+---
+
+# Decision 43 — Organization-Wide Leave Reports
+
+Two organization-wide, read-only Leave reports are approved:
+`GET /api/v1/reports/leave/allocations` and
+`GET /api/v1/reports/leave/balances`. Both require authentication and the
+persisted `report.leave.read` permission, assigned only to the
+`HR Administrator` role. Payroll Administrator permissions remain separate. The
+reports are not employee-self-service or manager-scoped, and do not emit
+report-read audit events. Existing Leave creation authorization is outside
+this decision and remains unchanged.
+
+The allocation report returns one row per persisted
+`leave_request_days` allocation. Each row contains exactly
+`leave_request_id`, `leave_request_day_id`, `employee_id`, `employee_code`,
+`first_name`, `last_name`, `department_id`, `department_name`,
+`designation_id`, `designation_name`, `leave_type_id`, `leave_type_name`,
+`start_date`, `end_date`, `requested_days`, `status`, `leave_date`, and
+`day_fraction`. Employee, department, designation, and Leave Type labels use
+current master data; historical label accuracy is not guaranteed. Request
+reason, review comment, reviewer identifiers, payroll treatment, credentials,
+contact details, and security fields are excluded. `requested_days` repeats
+for each allocation and must not be summed across allocation rows to derive a
+request total.
+
+Allocation filters are inclusive `date_from` and `date_to` on the persisted
+allocation `leave_date`, positive exact `employee_id`, `department_id`, and
+`leave_type_id`, and exact request `status`. All four supported statuses
+(`PENDING`, `APPROVED`, `REJECTED`, and `CANCELLED`) are included by default.
+Reversed date ranges and invalid status values return HTTP 422. Unknown IDs
+produce an empty page when no row matches.
+
+The balance report returns one row per unique
+`(employee_id, leave_type_id, balance_year)`. Each row contains exactly
+`employee_id`, `employee_code`, `first_name`, `last_name`, `department_id`,
+`department_name`, `designation_id`, `designation_name`, `leave_type_id`,
+`leave_type_name`, `balance_year`, `allocated_days`, and `used_days`. These
+values are read from the persisted balance record and current master data.
+All employee statuses are included by default. Optional filters are positive
+exact `employee_id`, `department_id`, and `leave_type_id`, plus exact stored
+`balance_year` in the schema-supported range 0 through 65535. The report does
+not calculate remaining days, reconcile balances against request allocations,
+or interpret `balance_year` as a calendar or employment year.
+
+Both reports use keyset pagination with a default limit of 50 and maximum of
+100, fetching at most `limit + 1` rows per query. Allocation rows are ordered
+ascending by `(leave_date, leave_request_day_id)`; balance rows are ordered
+ascending by the unique `(employee_id, leave_type_id, balance_year)` key.
+Opaque deterministic base64url cursors are HMAC-SHA256 signed with the
+configured application signing key, use distinct report-specific
+discriminators, and are bound to all active filters and the last returned
+key. Malformed, tampered, wrong-report, or filter-mismatched cursors return
+HTTP 422. There is no offset pagination or total-count query.
+
+Each page reflects current persisted state; there is no cross-page snapshot
+guarantee. The `leave_request_days` table has no date-leading index. Bounded
+page size does not bound rows scanned or sorted for date-filtered allocation
+queries. Any index proposal requires query-plan and workload evidence. This
+decision authorizes no schema, migration, or index change and does not alter
+Leave accounting, lifecycle, balance semantics, or creation authorization.

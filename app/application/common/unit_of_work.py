@@ -18,6 +18,7 @@ class UnitOfWork(ABC):
     leave_types: object
     leave_balances: object
     leave_requests: object
+    leave_reports: object
     salary_structures: object
     salary_components: object
     salary_revisions: object

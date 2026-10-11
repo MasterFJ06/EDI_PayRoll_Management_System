@@ -40,6 +40,9 @@ from app.infrastructure.persistence.repositories.leave_balance_repository import
 from app.infrastructure.persistence.repositories.leave_request_repository import (
     LeaveRequestRepository,
 )
+from app.infrastructure.persistence.repositories.leave_report_repository import (
+    LeaveReportRepository,
+)
 from app.infrastructure.persistence.repositories.salary_structure_repository import (
     SalaryStructureRepository,
 )
@@ -94,6 +97,7 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
         self.leave_types: LeaveTypeRepository | None = None
         self.leave_balances: LeaveBalanceRepository | None = None
         self.leave_requests: LeaveRequestRepository | None = None
+        self.leave_reports: LeaveReportRepository | None = None
         self.salary_structures: SalaryStructureRepository | None = None
         self.salary_components: SalaryComponentRepository | None = None
         self.salary_revisions: SalaryRevisionRepository | None = None
@@ -123,6 +127,7 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
         self.leave_types = LeaveTypeRepository(self.session)
         self.leave_balances = LeaveBalanceRepository(self.session)
         self.leave_requests = LeaveRequestRepository(self.session)
+        self.leave_reports = LeaveReportRepository(self.session)
         self.salary_structures = SalaryStructureRepository(self.session)
         self.salary_components = SalaryComponentRepository(self.session)
         self.salary_revisions = SalaryRevisionRepository(self.session)
@@ -164,6 +169,7 @@ class SQLAlchemyUnitOfWork(UnitOfWork):
                 self.leave_types = None
                 self.leave_balances = None
                 self.leave_requests = None
+                self.leave_reports = None
                 self.salary_structures = None
                 self.salary_components = None
                 self.salary_revisions = None

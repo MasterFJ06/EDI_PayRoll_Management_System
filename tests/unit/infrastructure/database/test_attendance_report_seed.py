@@ -6,7 +6,7 @@ def test_attendance_report_permission_is_assigned_only_to_hr_administrator() -> 
     assert "('report.attendance.read', 'View organization-wide attendance reports.')" in seed
 
     assignments = seed.split("INSERT IGNORE INTO role_permissions")[1:]
-    payroll_assignment, employee_report_assignment, attendance_assignment = assignments
+    payroll_assignment, employee_report_assignment, attendance_assignment, leave_assignment = assignments
 
     assert "report.attendance.read" not in payroll_assignment
     assert "p.permission_code = 'report.employee.read'" in employee_report_assignment
@@ -15,3 +15,12 @@ def test_attendance_report_permission_is_assigned_only_to_hr_administrator() -> 
     assert "payroll." not in attendance_assignment
     assert "report.payroll.read" not in attendance_assignment
     assert "report.employee.read" not in attendance_assignment
+    assert "report.leave.read" not in payroll_assignment
+    assert "report.leave.read" not in employee_report_assignment
+    assert "report.leave.read" not in attendance_assignment
+    assert "p.permission_code = 'report.leave.read'" in leave_assignment
+    assert "WHERE r.role_name = 'HR Administrator'" in leave_assignment
+    assert "payroll." not in leave_assignment
+    assert "report.payroll.read" not in leave_assignment
+    assert "report.employee.read" not in leave_assignment
+    assert "report.attendance.read" not in leave_assignment

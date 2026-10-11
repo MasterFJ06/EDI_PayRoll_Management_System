@@ -1655,3 +1655,693 @@ def _get_or_create_permission(session: Session, code: str, description: str):
     session.add(permission)
     session.flush()
     return permission, True
+
+
+@dataclass(frozen=True)
+class SeededLeaveReport:
+    hr_user_id: int
+    hr_username: str
+    payroll_user_id: int
+    payroll_username: str
+    hr_role_id: int
+    payroll_role_id: int
+    department_id: int
+    department_name: str
+    designation_id: int
+    designation_name: str
+    active_employee_id: int
+    terminated_employee_id: int
+    leave_type_ids: tuple[int, int]
+    allocation_request_pairs: tuple[tuple[int, int], ...]
+    balance_ids: tuple[int, ...]
+    user_ids: tuple[int, int]
+    employee_ids: tuple[int, int]
+    created_role_ids: tuple[int, ...]
+    created_permission_ids: tuple[int, ...]
+    created_role_permission_keys: tuple[tuple[int, int], ...]
+
+
+@pytest.fixture
+def real_mysql_leave_report(mysql_test_engine, monkeypatch: pytest.MonkeyPatch):
+    engine, _database_name = mysql_test_engine
+    from app.core.config import Settings
+    from app.infrastructure.database.session import SessionLocal
+    from app.infrastructure.security import jwt
+
+    previous_bind = SessionLocal.kw["bind"]
+    SessionLocal.configure(bind=engine)
+    monkeypatch.setattr(
+        jwt,
+        "settings",
+        Settings.model_construct(
+            database_host="127.0.0.1",
+            database_port=3306,
+            database_name="epms_r7_runtime_test",
+            database_user="epms_ci",
+            database_password="test-only-unused",
+            jwt_secret_key=uuid4().hex,
+            jwt_algorithm="HS256",
+            access_token_expire_minutes=15,
+            refresh_token_expire_days=1,
+            payroll_worker_count=1,
+            payroll_attempt_lease_seconds=900,
+        ),
+    )
+    try:
+        leave_seed = _seed_leave_report_data(engine)
+        try:
+            yield engine, leave_seed
+        finally:
+            _cleanup_leave_report_data(engine, leave_seed)
+    finally:
+        SessionLocal.configure(bind=previous_bind)
+
+
+def _get_or_create_role(session: Session, role_name: str, description: str):
+    from app.infrastructure.persistence.models.role import Role
+
+    role = session.scalar(select(Role).where(Role.role_name == role_name))
+    if role is not None:
+        return role, False
+    role = Role(role_name=role_name, description=description, is_active=True)
+    session.add(role)
+    session.flush()
+    return role, True
+
+
+def _seed_leave_report_data(engine) -> SeededLeaveReport:
+    from app.infrastructure.persistence.models.department import Department
+    from app.infrastructure.persistence.models.employee import Employee
+    from app.infrastructure.persistence.models.leave_balance import LeaveBalanceModel
+    from app.infrastructure.persistence.models.leave_request import LeaveRequestModel
+    from app.infrastructure.persistence.models.leave_request_day import LeaveRequestDayModel
+    from app.infrastructure.persistence.models.leave_type import LeaveTypeModel
+    from app.infrastructure.persistence.models.designation import Designation
+    from app.infrastructure.persistence.models.role_permission import RolePermission
+    from app.infrastructure.persistence.models.user import User
+    from app.infrastructure.persistence.models.user_role import UserRole
+    from app.infrastructure.security.password import hash_password
+
+    marker = uuid4().hex[:12]
+    allocation_request_pairs = []
+    balance_ids: list[int] = []
+    created_role_ids: list[int] = []
+    created_permission_ids: list[int] = []
+    created_role_permission_keys: list[tuple[int, int]] = []
+    with Session(engine) as session, session.begin():
+        hr_role, created_hr_role = _get_or_create_role(
+            session, "HR Administrator", "Administration of employee reporting."
+        )
+        payroll_role, created_payroll_role = _get_or_create_role(
+            session, "Payroll Administrator", "Administration of payroll operations."
+        )
+        for role, created in ((hr_role, created_hr_role), (payroll_role, created_payroll_role)):
+            if created:
+                created_role_ids.append(role.role_id)
+
+        leave_permission, created_leave_permission = _get_or_create_permission(
+            session, "report.leave.read", "View organization-wide Leave reports."
+        )
+        payroll_permissions = [
+            _get_or_create_permission(
+                session, "payroll.run.read", "View payroll runs."
+            ),
+            _get_or_create_permission(
+                session, "report.payroll.read", "View finalized payroll run summaries."
+            )
+        ]
+        if created_leave_permission:
+            created_permission_ids.append(leave_permission.permission_id)
+        created_permission_ids.extend(
+            permission.permission_id
+            for permission, created in payroll_permissions
+            if created
+        )
+
+        role_permission_pairs = [(hr_role.role_id, leave_permission.permission_id)] + [
+            (payroll_role.role_id, permission.permission_id)
+            for permission, _created in payroll_permissions
+        ]
+        for role_id, permission_id in role_permission_pairs:
+            if session.get(RolePermission, (role_id, permission_id)) is None:
+                session.add(RolePermission(role_id=role_id, permission_id=permission_id))
+                created_role_permission_keys.append((role_id, permission_id))
+
+        hr_user = User(
+            username=f"leave_hr_{marker}",
+            email=f"leave_hr_{marker}@example.invalid",
+            password_hash=hash_password("Synthetic Leave HR integration credential"),
+            status="ACTIVE",
+        )
+        payroll_user = User(
+            username=f"leave_pay_{marker}",
+            email=f"leave_pay_{marker}@example.invalid",
+            password_hash=hash_password("Synthetic Payroll integration credential"),
+            status="ACTIVE",
+        )
+        department = Department(
+            department_code=f"LVD{marker}",
+            department_name=f"Leave Department {marker}",
+            status="ACTIVE",
+        )
+        designation = Designation(
+            designation_code=f"LVT{marker}",
+            designation_name=f"Leave Analyst {marker}",
+            status="ACTIVE",
+        )
+        leave_types = [
+            LeaveTypeModel(
+                leave_type_code=f"LVA{marker}",
+                leave_type_name=f"Annual {marker}",
+                description="Synthetic report fixture leave type.",
+                payroll_treatment="PAID",
+                is_active=True,
+            ),
+            LeaveTypeModel(
+                leave_type_code=f"LVS{marker}",
+                leave_type_name=f"Special {marker}",
+                description="Synthetic report fixture leave type.",
+                payroll_treatment="UNPAID",
+                is_active=True,
+            ),
+        ]
+        session.add_all([hr_user, payroll_user, department, designation, *leave_types])
+        session.flush()
+        terminated_employee = Employee(
+            employee_code=f"LVR{marker}",
+            user_id=None,
+            first_name="Terminated",
+            last_name="ReportSubject",
+            department_id=department.department_id,
+            designation_id=designation.designation_id,
+            joining_date=date(2020, 1, 1),
+            employment_end_date=date(2025, 12, 31),
+            employment_status="TERMINATED",
+        )
+        active_employee = Employee(
+            employee_code=f"LVA{marker}",
+            user_id=None,
+            first_name="Active",
+            last_name="ReportSubject",
+            department_id=department.department_id,
+            designation_id=designation.designation_id,
+            joining_date=date(2020, 1, 1),
+            employment_status="ACTIVE",
+        )
+        session.add_all([active_employee, terminated_employee])
+        session.flush()
+        session.add_all(
+            [
+                UserRole(
+                    user_id=hr_user.user_id,
+                    role_id=hr_role.role_id,
+                    assigned_by_user_id=hr_user.user_id,
+                ),
+                UserRole(
+                    user_id=payroll_user.user_id,
+                    role_id=payroll_role.role_id,
+                    assigned_by_user_id=payroll_user.user_id,
+                ),
+            ]
+        )
+
+        statuses = ("PENDING", "APPROVED", "REJECTED", "CANCELLED")
+        requests: list[LeaveRequestModel] = []
+        for leave_status in statuses:
+            requests.append(
+                LeaveRequestModel(
+                    employee_id=active_employee.employee_id,
+                    leave_type_id=leave_types[0].leave_type_id,
+                    start_date=date(2026, 3, 10),
+                    end_date=date(2026, 3, 11),
+                    requested_days=Decimal("1.50"),
+                    reason=f"PRIVATE_REASON_{marker}",
+                    status=leave_status,
+                    reviewed_by_employee_id=(
+                        active_employee.employee_id
+                        if leave_status in {"APPROVED", "REJECTED"}
+                        else None
+                    ),
+                    reviewed_at=(
+                        datetime(2026, 3, 1)
+                        if leave_status in {"APPROVED", "REJECTED"}
+                        else None
+                    ),
+                    review_comment=(
+                        f"PRIVATE_REVIEW_{marker}"
+                        if leave_status in {"APPROVED", "REJECTED"}
+                        else None
+                    ),
+                )
+            )
+        requests.append(
+            LeaveRequestModel(
+                employee_id=terminated_employee.employee_id,
+                leave_type_id=leave_types[1].leave_type_id,
+                start_date=date(2026, 3, 10),
+                end_date=date(2026, 3, 11),
+                requested_days=Decimal("1.50"),
+                reason=f"PRIVATE_REASON_{marker}",
+                status="APPROVED",
+                reviewed_by_employee_id=active_employee.employee_id,
+                reviewed_at=datetime(2026, 3, 1),
+                review_comment=f"PRIVATE_REVIEW_{marker}",
+            )
+        )
+        session.add_all(requests)
+        session.flush()
+
+        allocations: list[LeaveRequestDayModel] = []
+        for request in requests:
+            for allocation_date, fraction in (
+                (date(2026, 3, 10), Decimal("0.50")),
+                (date(2026, 3, 11), Decimal("1.00")),
+            ):
+                allocation = LeaveRequestDayModel(
+                    leave_request_id=request.leave_request_id,
+                    leave_date=allocation_date,
+                    day_fraction=fraction,
+                )
+                allocations.append(allocation)
+                allocation_request_pairs.append((allocation, request.leave_request_id))
+        session.add_all(allocations)
+        balances = [
+            LeaveBalanceModel(
+                employee_id=active_employee.employee_id,
+                leave_type_id=leave_types[0].leave_type_id,
+                balance_year=2025,
+                allocated_days=Decimal("10.00"),
+                used_days=Decimal("2.50"),
+            ),
+            LeaveBalanceModel(
+                employee_id=active_employee.employee_id,
+                leave_type_id=leave_types[0].leave_type_id,
+                balance_year=2026,
+                allocated_days=Decimal("12.00"),
+                used_days=Decimal("3.25"),
+            ),
+            LeaveBalanceModel(
+                employee_id=active_employee.employee_id,
+                leave_type_id=leave_types[1].leave_type_id,
+                balance_year=0,
+                allocated_days=Decimal("8.00"),
+                used_days=Decimal("1.00"),
+            ),
+            LeaveBalanceModel(
+                employee_id=terminated_employee.employee_id,
+                leave_type_id=leave_types[1].leave_type_id,
+                balance_year=2025,
+                allocated_days=Decimal("5.00"),
+                used_days=Decimal("1.00"),
+            ),
+        ]
+        session.add_all(balances)
+        session.flush()
+        balance_ids.extend(balance.leave_balance_id for balance in balances)
+        return SeededLeaveReport(
+            hr_user_id=hr_user.user_id,
+            hr_username=hr_user.username,
+            payroll_user_id=payroll_user.user_id,
+            payroll_username=payroll_user.username,
+            hr_role_id=hr_role.role_id,
+            payroll_role_id=payroll_role.role_id,
+            department_id=department.department_id,
+            department_name=department.department_name,
+            designation_id=designation.designation_id,
+            designation_name=designation.designation_name,
+            active_employee_id=active_employee.employee_id,
+            terminated_employee_id=terminated_employee.employee_id,
+            leave_type_ids=(leave_types[0].leave_type_id, leave_types[1].leave_type_id),
+            allocation_request_pairs=tuple(
+                (allocation.leave_request_day_id, request_id)
+                for allocation, request_id in allocation_request_pairs
+            ),
+            balance_ids=tuple(balance_ids),
+            user_ids=(hr_user.user_id, payroll_user.user_id),
+            employee_ids=(active_employee.employee_id, terminated_employee.employee_id),
+            created_role_ids=tuple(created_role_ids),
+            created_permission_ids=tuple(created_permission_ids),
+            created_role_permission_keys=tuple(created_role_permission_keys),
+        )
+
+
+def _cleanup_leave_report_data(engine, leave_seed: SeededLeaveReport) -> None:
+    from app.infrastructure.persistence.models.department import Department
+    from app.infrastructure.persistence.models.employee import Employee
+    from app.infrastructure.persistence.models.designation import Designation
+    from app.infrastructure.persistence.models.leave_balance import LeaveBalanceModel
+    from app.infrastructure.persistence.models.leave_request import LeaveRequestModel
+    from app.infrastructure.persistence.models.leave_request_day import LeaveRequestDayModel
+    from app.infrastructure.persistence.models.leave_type import LeaveTypeModel
+    from app.infrastructure.persistence.models.permission import Permission
+    from app.infrastructure.persistence.models.role_permission import RolePermission
+    from app.infrastructure.persistence.models.role import Role
+    from app.infrastructure.persistence.models.user import User
+    from app.infrastructure.persistence.models.user_role import UserRole
+
+    request_ids = tuple({request_id for _, request_id in leave_seed.allocation_request_pairs})
+    allocation_ids = tuple(allocation_id for allocation_id, _ in leave_seed.allocation_request_pairs)
+    with Session(engine) as session, session.begin():
+        if allocation_ids:
+            session.execute(
+                delete(LeaveRequestDayModel).where(
+                    LeaveRequestDayModel.leave_request_day_id.in_(allocation_ids)
+                )
+            )
+        if request_ids:
+            session.execute(
+                delete(LeaveRequestModel).where(
+                    LeaveRequestModel.leave_request_id.in_(request_ids)
+                )
+            )
+        if leave_seed.balance_ids:
+            session.execute(
+                delete(LeaveBalanceModel).where(
+                    LeaveBalanceModel.leave_balance_id.in_(leave_seed.balance_ids)
+                )
+            )
+        session.execute(delete(Employee).where(Employee.employee_id.in_(leave_seed.employee_ids)))
+        session.execute(
+            delete(LeaveTypeModel).where(
+                LeaveTypeModel.leave_type_id.in_(leave_seed.leave_type_ids)
+            )
+        )
+        for role_id, permission_id in leave_seed.created_role_permission_keys:
+            session.execute(
+                delete(RolePermission).where(
+                    RolePermission.role_id == role_id,
+                    RolePermission.permission_id == permission_id,
+                )
+            )
+        session.execute(delete(UserRole).where(UserRole.user_id.in_(leave_seed.user_ids)))
+        if leave_seed.created_permission_ids:
+            references = session.scalars(
+                select(RolePermission.permission_id).where(
+                    RolePermission.permission_id.in_(leave_seed.created_permission_ids)
+                )
+            ).all()
+            unused_permissions = set(leave_seed.created_permission_ids) - set(references)
+            if unused_permissions:
+                session.execute(
+                    delete(Permission).where(
+                        Permission.permission_id.in_(unused_permissions)
+                    )
+                )
+        if leave_seed.created_role_ids:
+            referenced_roles = session.scalars(
+                select(UserRole.role_id)
+                .where(UserRole.role_id.in_(leave_seed.created_role_ids))
+                .union(
+                    select(RolePermission.role_id).where(
+                        RolePermission.role_id.in_(leave_seed.created_role_ids)
+                    )
+                )
+            ).all()
+            unused_roles = set(leave_seed.created_role_ids) - set(referenced_roles)
+            if unused_roles:
+                session.execute(delete(Role).where(Role.role_id.in_(unused_roles)))
+        session.execute(delete(User).where(User.user_id.in_(leave_seed.user_ids)))
+        session.execute(delete(Department).where(Department.department_id == leave_seed.department_id))
+        session.execute(delete(Designation).where(Designation.designation_id == leave_seed.designation_id))
+
+
+def _leave_report_headers(user_id: int, username: str) -> dict[str, str]:
+    from app.infrastructure.security.jwt import create_access_token
+
+    return {"Authorization": f"Bearer {create_access_token(user_id, username)}"}
+
+
+def test_leave_reports_use_persisted_hr_permission_and_reject_payroll_role(
+    real_mysql_leave_report,
+) -> None:
+    engine, leave_seed = real_mysql_leave_report
+    from app.infrastructure.persistence.models.audit_event import AuditEventModel
+    from app.infrastructure.persistence.models.permission import Permission
+    from app.infrastructure.persistence.models.role_permission import RolePermission
+    from app.main import app
+
+    with Session(engine) as session:
+        permission = session.scalar(
+            select(Permission).where(Permission.permission_code == "report.leave.read")
+        )
+        assert permission is not None
+        assert session.get(
+            RolePermission, (leave_seed.hr_role_id, permission.permission_id)
+        ) is not None
+        assert session.get(
+            RolePermission, (leave_seed.payroll_role_id, permission.permission_id)
+        ) is None
+
+    hr_headers = _leave_report_headers(leave_seed.hr_user_id, leave_seed.hr_username)
+    payroll_headers = _leave_report_headers(
+        leave_seed.payroll_user_id, leave_seed.payroll_username
+    )
+    paths = (
+        "/api/v1/reports/leave/allocations",
+        "/api/v1/reports/leave/balances",
+    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        for path in paths:
+            assert client.get(path).status_code == 401
+            denied = client.get(path, headers=payroll_headers)
+            assert denied.status_code == 403, denied.text
+            allowed = client.get(path, headers=hr_headers)
+            assert allowed.status_code == 200, allowed.text
+
+    with Session(engine) as session:
+        assert session.scalar(
+            select(func.count()).select_from(AuditEventModel).where(
+                AuditEventModel.actor_user_id == leave_seed.hr_user_id
+            )
+        ) == 0
+
+
+def test_leave_allocation_report_filters_paginates_and_preserves_allocations(
+    real_mysql_leave_report,
+) -> None:
+    engine, leave_seed = real_mysql_leave_report
+    from app.infrastructure.persistence.models.leave_request_day import LeaveRequestDayModel
+    from app.main import app
+
+    headers = _leave_report_headers(leave_seed.hr_user_id, leave_seed.hr_username)
+    with Session(engine) as session:
+        expected_rows = session.execute(
+            select(
+                LeaveRequestDayModel.leave_request_day_id,
+                LeaveRequestDayModel.leave_request_id,
+                LeaveRequestDayModel.leave_date,
+            ).where(
+                LeaveRequestDayModel.leave_request_day_id.in_(
+                    [item[0] for item in leave_seed.allocation_request_pairs]
+                )
+            ).order_by(
+                LeaveRequestDayModel.leave_date,
+                LeaveRequestDayModel.leave_request_day_id,
+            )
+        ).all()
+    expected_request_by_allocation = dict(leave_seed.allocation_request_pairs)
+    response_fields = {
+        "leave_request_id", "leave_request_day_id", "employee_id", "employee_code",
+        "first_name", "last_name", "department_id", "department_name", "designation_id",
+        "designation_name", "leave_type_id", "leave_type_name", "start_date", "end_date",
+        "requested_days", "status", "leave_date", "day_fraction",
+    }
+    forbidden_fields = {
+        "reason", "review_comment", "reviewed_by_employee_id", "password_hash", "email",
+        "phone_number", "payroll_treatment", "gross_earnings", "net_salary",
+    }
+    with TestClient(app, raise_server_exceptions=False) as client:
+        all_rows = []
+        cursor = None
+        while True:
+            params = {"limit": 2, "date_from": "2026-03-10", "date_to": "2026-03-11"}
+            if cursor:
+                params["cursor"] = cursor
+            page_response = client.get(
+                "/api/v1/reports/leave/allocations", params=params, headers=headers
+            )
+            assert page_response.status_code == 200, page_response.text
+            body = page_response.json()
+            assert set(body) == {"allocations", "pagination"}
+            for row in body["allocations"]:
+                assert set(row) == response_fields
+                assert forbidden_fields.isdisjoint(row)
+            all_rows.extend(body["allocations"])
+            cursor = body["pagination"]["next_cursor"]
+            assert body["pagination"]["has_more"] == (cursor is not None)
+            if cursor is None:
+                break
+
+        assert len(all_rows) == len(expected_rows)
+        assert [row["leave_request_day_id"] for row in all_rows] == [row[0] for row in expected_rows]
+        assert [row["leave_request_id"] for row in all_rows] == [
+            expected_request_by_allocation[row[0]] for row in expected_rows
+        ]
+        assert {row["status"] for row in all_rows} == {
+            "PENDING", "APPROVED", "REJECTED", "CANCELLED"
+        }
+        assert all(row["requested_days"] == "1.50" for row in all_rows)
+        assert all(row["day_fraction"] in {"0.50", "1.00"} for row in all_rows)
+        assert any(row["employee_id"] == leave_seed.terminated_employee_id for row in all_rows)
+        assert {row["leave_date"] for row in all_rows} == {"2026-03-10", "2026-03-11"}
+        assert all(row["department_name"] == leave_seed.department_name for row in all_rows)
+        assert all(row["designation_name"] == leave_seed.designation_name for row in all_rows)
+
+        same_date = client.get(
+            "/api/v1/reports/leave/allocations",
+            params={"date_from": "2026-03-10", "date_to": "2026-03-10", "limit": 100},
+            headers=headers,
+        )
+        assert same_date.status_code == 200, same_date.text
+        assert len(same_date.json()["allocations"]) == 5
+        assert {row["leave_date"] for row in same_date.json()["allocations"]} == {"2026-03-10"}
+
+        filters_and_counts = (
+            ({"employee_id": leave_seed.terminated_employee_id}, 2),
+            ({"department_id": leave_seed.department_id}, 10),
+            ({"leave_type_id": leave_seed.leave_type_ids[0]}, 8),
+            ({"status": "APPROVED"}, 4),
+            ({"employee_id": 4_000_000_000}, 0),
+        )
+        for filters, expected_count in filters_and_counts:
+            filtered = client.get(
+                "/api/v1/reports/leave/allocations", params=filters, headers=headers
+            )
+            assert filtered.status_code == 200, filtered.text
+            assert len(filtered.json()["allocations"]) == expected_count
+
+
+def test_leave_balance_report_filters_paginates_and_returns_persisted_values(
+    real_mysql_leave_report,
+) -> None:
+    engine, leave_seed = real_mysql_leave_report
+    from app.infrastructure.persistence.models.leave_balance import LeaveBalanceModel
+    from app.main import app
+
+    headers = _leave_report_headers(leave_seed.hr_user_id, leave_seed.hr_username)
+    with Session(engine) as session:
+        expected_keys = session.execute(
+            select(
+                LeaveBalanceModel.employee_id,
+                LeaveBalanceModel.leave_type_id,
+                LeaveBalanceModel.balance_year,
+                LeaveBalanceModel.allocated_days,
+                LeaveBalanceModel.used_days,
+            ).where(LeaveBalanceModel.leave_balance_id.in_(leave_seed.balance_ids)).order_by(
+                LeaveBalanceModel.employee_id,
+                LeaveBalanceModel.leave_type_id,
+                LeaveBalanceModel.balance_year,
+            )
+        ).all()
+    fields = {
+        "employee_id", "employee_code", "first_name", "last_name", "department_id",
+        "department_name", "designation_id", "designation_name", "leave_type_id",
+        "leave_type_name", "balance_year", "allocated_days", "used_days",
+    }
+    with TestClient(app, raise_server_exceptions=False) as client:
+        rows = []
+        cursor = None
+        while True:
+            params = {"limit": 1}
+            if cursor:
+                params["cursor"] = cursor
+            response = client.get("/api/v1/reports/leave/balances", params=params, headers=headers)
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert set(body) == {"balances", "pagination"}
+            assert all(set(row) == fields and "remaining_days" not in row for row in body["balances"])
+            rows.extend(body["balances"])
+            cursor = body["pagination"]["next_cursor"]
+            assert body["pagination"]["has_more"] == (cursor is not None)
+            if cursor is None:
+                break
+
+        assert [
+            (row["employee_id"], row["leave_type_id"], row["balance_year"])
+            for row in rows
+        ] == [(row[0], row[1], row[2]) for row in expected_keys]
+        assert [(row["allocated_days"], row["used_days"]) for row in rows] == [
+            (str(row[3]), str(row[4])) for row in expected_keys
+        ]
+        assert rows[-1]["employee_id"] == leave_seed.terminated_employee_id
+        assert rows[0]["department_name"] == leave_seed.department_name
+        assert rows[0]["designation_name"] == leave_seed.designation_name
+
+        filters_and_counts = (
+            ({"employee_id": leave_seed.terminated_employee_id}, 1),
+            ({"department_id": leave_seed.department_id}, 4),
+            ({"leave_type_id": leave_seed.leave_type_ids[0]}, 2),
+            ({"balance_year": 0}, 1),
+            ({"employee_id": 4_000_000_000}, 0),
+        )
+        for filters, expected_count in filters_and_counts:
+            filtered = client.get(
+                "/api/v1/reports/leave/balances", params=filters, headers=headers
+            )
+            assert filtered.status_code == 200, filtered.text
+            assert len(filtered.json()["balances"]) == expected_count
+
+
+def test_leave_allocation_report_rejects_invalid_cursors_and_parameters(
+    real_mysql_leave_report,
+) -> None:
+    _engine, leave_seed = real_mysql_leave_report
+    from app.main import app
+
+    headers = _leave_report_headers(leave_seed.hr_user_id, leave_seed.hr_username)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        first = client.get(
+            "/api/v1/reports/leave/allocations", params={"limit": 1}, headers=headers
+        )
+        assert first.status_code == 200, first.text
+        cursor = first.json()["pagination"]["next_cursor"]
+        assert cursor
+        altered = cursor[:-1] + ("A" if cursor[-1] != "A" else "B")
+        invalid_queries = (
+            {"cursor": "malformed"},
+            {"cursor": altered},
+            {"cursor": cursor, "employee_id": leave_seed.terminated_employee_id},
+            {"date_from": "2026-03-11", "date_to": "2026-03-10"},
+            {"status": "UNKNOWN"},
+            {"employee_id": 0},
+            {"limit": 101},
+        )
+        for params in invalid_queries:
+            response = client.get(
+                "/api/v1/reports/leave/allocations", params=params, headers=headers
+            )
+            assert response.status_code == 422, (params, response.text)
+            assert cursor not in response.text
+            assert "signature" not in response.text.lower()
+
+
+def test_leave_balance_report_rejects_invalid_cursors_and_parameters(
+    real_mysql_leave_report,
+) -> None:
+    _engine, leave_seed = real_mysql_leave_report
+    from app.main import app
+
+    headers = _leave_report_headers(leave_seed.hr_user_id, leave_seed.hr_username)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        first = client.get(
+            "/api/v1/reports/leave/balances", params={"limit": 1}, headers=headers
+        )
+        assert first.status_code == 200, first.text
+        cursor = first.json()["pagination"]["next_cursor"]
+        assert cursor
+        altered = cursor[:-1] + ("A" if cursor[-1] != "A" else "B")
+        invalid_queries = (
+            {"cursor": "malformed"},
+            {"cursor": altered},
+            {"cursor": cursor, "balance_year": 2026},
+            {"cursor": cursor},
+            {"balance_year": 65536},
+            {"leave_type_id": 0},
+            {"limit": 0},
+        )
+        for params in invalid_queries:
+            path = "/api/v1/reports/leave/allocations" if params == {"cursor": cursor} else "/api/v1/reports/leave/balances"
+            response = client.get(path, params=params, headers=headers)
+            assert response.status_code == 422, (path, params, response.text)
+            assert cursor not in response.text
+            assert "signature" not in response.text.lower()

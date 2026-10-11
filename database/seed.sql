@@ -16,6 +16,7 @@ VALUES
     ('report.payroll.read', 'View finalized payroll run summaries.'),
     ('report.employee.read', 'View organization-wide employee reports.'),
     ('report.attendance.read', 'View organization-wide attendance reports.'),
+    ('report.leave.read', 'View organization-wide Leave reports.'),
     ('organization.calendar.read', 'View organization work calendar versions.'),
     ('organization.calendar.manage', 'Manage organization work calendar versions and overrides.'),
     ('workforce.leave_type.manage', 'Create and manage Leave Types.'),
@@ -52,4 +53,11 @@ SELECT r.role_id, p.permission_id
 FROM roles AS r
 JOIN permissions AS p
   ON p.permission_code = 'report.attendance.read'
+WHERE r.role_name = 'HR Administrator';
+
+INSERT IGNORE INTO role_permissions (role_id, permission_id)
+SELECT r.role_id, p.permission_id
+FROM roles AS r
+JOIN permissions AS p
+  ON p.permission_code = 'report.leave.read'
 WHERE r.role_name = 'HR Administrator';

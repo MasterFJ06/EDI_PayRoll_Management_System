@@ -34,6 +34,7 @@ _REQUIRED_PATH_TABLES = {
     "payroll_result_components", "payroll_processing_issues",
     "payroll_run_workforce_snapshots", "audit_events", "audit_event_changes",
     "payslips",
+    "leave_types", "leave_requests", "leave_request_days", "leave_balances",
 }
 
 
@@ -553,7 +554,9 @@ def _verify_schema_state(connection, prepared_schema: Path) -> None:
     if actual_tables != set(expected):
         raise SchemaVerificationError(f"MySQL table set mismatch: expected {sorted(expected)!r}; actual {sorted(actual_tables)!r}")
     if not _REQUIRED_PATH_TABLES.issubset(actual_tables):
-        raise SchemaVerificationError("Prepared snapshot is missing a required payroll-path table.")
+        raise SchemaVerificationError(
+            "Prepared snapshot is missing a required integration-path table."
+        )
     actual_definitions: dict[str, TableDefinition] = {}
     for table in sorted(expected):
         row = connection.execute(text(f"SHOW CREATE TABLE `{table}`")).one()
