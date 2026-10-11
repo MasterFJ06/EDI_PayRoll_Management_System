@@ -919,3 +919,79 @@ page size does not bound rows scanned or sorted for date-filtered allocation
 queries. Any index proposal requires query-plan and workload evidence. This
 decision authorizes no schema, migration, or index change and does not alter
 Leave accounting, lifecycle, balance semantics, or creation authorization.
+
+---
+
+# Decision 44 — Finalized Payroll Component Breakdown Report
+
+The read-only finalized Payroll Component Breakdown report is available at
+`GET /api/v1/reports/payroll/runs/{run_id}/components`, where `run_id` must be
+positive. It returns one row per persisted `payroll_result_components` record
+associated with a Payroll Result belonging to the requested run. Rows from
+other runs or payroll attempts are never included.
+
+Access requires authentication and the existing persisted
+`report.payroll.read` permission, assigned to the `Payroll Administrator`
+role. This permission covers finalized Payroll Run summaries, Payroll Results,
+and component details. It does not implicitly grant access to HR
+Administrators or employees. Missing or invalid authentication returns HTTP
+401; an authenticated user without the permission receives HTTP 403.
+
+Each component row contains exactly `payroll_result_component_id`,
+`payroll_run_id`, `payroll_result_id`, `employee_id`, `employee_code`,
+`employee_name`, `salary_component_id`, `component_code`, `component_name`,
+`component_type`, `amount`, and `calculation_order`. Component identifier,
+result identifier, salary component identifier, persisted type, persisted
+amount, and calculation order come from the Payroll Result Component.
+`payroll_run_id` comes from its associated Payroll Run, and `employee_id`
+comes from its associated Payroll Result. Employee code and full name come
+from current Employee master data; component code and name come from the
+current Salary Component definition. Employee labels may be null when
+unavailable. Current labels are not historical snapshots. Inactive Salary
+Component definitions are not filtered out. The report excludes contact
+details, credentials, manager details, free-text fields, Workforce snapshots,
+and unrelated data.
+
+Amounts are returned from persisted component rows without recalculation or
+modification. This endpoint returns no gross, deduction, or net totals,
+component sums, or other derived financial values. The existing summary and
+Payroll Results reports remain authoritative for their contracted totals.
+
+A missing run returns HTTP 404. An existing run that is not `FINALIZED`
+returns HTTP 409. Invalid run IDs, filters, limits, or cursors return HTTP
+422. A finalized run with zero persisted Payroll Result Component rows
+returns HTTP 200 with an empty component page; it does not independently turn
+that condition into a conflict. Existing Payroll QA responsibilities remain
+separate.
+
+The schema's foreign key from
+`payroll_result_components.salary_component_id` to
+`salary_components.salary_component_id` uses `ON DELETE RESTRICT`. If an
+inconsistent row nevertheless references a missing Salary Component
+definition, the report must detect the integrity anomaly, must not silently
+omit the persisted component, and must fail safely with a sanitized HTTP 500
+integrity error using the centralized error response. Raw SQL, database
+internals, and sensitive record contents are not exposed.
+
+The only optional filters are exact `employee_id`, exact
+`salary_component_id`, and `component_type` (`EARNING` or `DEDUCTION`). The
+default page limit is 50 and the allowed range is 1 through 100. Results use
+bounded keyset pagination, fetching at most `limit + 1` rows, ordered by
+ascending `(payroll_result_id, salary_component_id)`. The response envelope
+contains `payroll_run_id`, `components`, and `pagination`; pagination contains
+`limit`, `has_more`, and nullable `next_cursor`.
+
+The opaque cursor uses the existing HMAC-SHA256 signing configuration and a
+component-report-specific discriminator. It is bound to report identity, the
+requested run ID, all active filters, and the last returned key tuple.
+Malformed, tampered, cross-run, cross-filter, or cross-report cursors return
+HTTP 422. No new index or migration is authorized; any future index proposal
+requires query-plan and workload evidence.
+
+The run's finalized state and its components are read within the same Unit of
+Work transaction. The report does not recalculate payroll, mutate payroll
+records, create a state transition, or emit a report-read audit event. It
+respects the existing terminal `FINALIZED` state and immutability of final
+Payroll Results and Workforce snapshots. This decision authorizes the
+component breakdown previously deferred by Decision 39 without changing the
+summary contract or the other deferred reporting capabilities.

@@ -758,3 +758,14 @@ authorization, allocation and balance filtering/pagination, and cursor errors.
 The strict serial integration inventory is 25 tests, and the workflow runs the
 Leave report API contract tests. Local collection and offline checks pass;
 ephemeral MySQL 8 runtime validation remains pending.
+
+## Reporting & Analytics — Finalized Payroll Component Breakdown Contract
+
+The read-only contract for
+`GET /api/v1/reports/payroll/runs/{run_id}/components` is approved and
+documented in Decision 44 and the API contract. It uses persisted Payroll
+Result Component amounts, requires the existing `report.payroll.read`
+permission for Payroll Administrator, and returns bounded filter-bound
+keyset pages. The API route and focused API tests are implemented; isolated
+MySQL runtime validation has not yet been performed. No runtime validation is
+claimed for this report.

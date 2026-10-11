@@ -51,6 +51,7 @@ class SeededPayroll:
     correlation_id: str
     extra_employee_ids: tuple[int, ...] = ()
     extra_salary_assignment_ids: tuple[int, ...] = ()
+    extra_salary_component_ids: tuple[int, ...] = ()
     extra_payroll_run_ids: tuple[int, ...] = ()
     extra_users: tuple[tuple[int, str], ...] = ()
 
@@ -792,6 +793,246 @@ def test_finalized_payroll_results_report_paginates_persisted_rows_and_is_run_sc
         }
 
 
+def test_payroll_component_report_reads_persisted_rows_filters_and_paginates(
+    real_mysql_payroll,
+) -> None:
+    engine, seed = real_mysql_payroll
+    _add_report_employee(engine, seed)
+    deduction_component_id = _add_report_deduction_component(engine, seed)
+    _finalize_seed_run(seed)
+    other_run_id = _add_other_run_result(engine, seed)
+    _add_component_to_other_finalized_run(engine, seed, other_run_id)
+
+    from app.infrastructure.persistence.models.employee import Employee
+    from app.infrastructure.persistence.models.payroll_result import PayrollResultModel
+    from app.infrastructure.persistence.models.payroll_result_component import (
+        PayrollResultComponentModel,
+    )
+    from app.infrastructure.persistence.models.payroll_run import PayrollRunModel
+    from app.infrastructure.persistence.models.salary_component import SalaryComponentModel
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    token = create_access_token(seed.user_id, seed.username)
+    headers = {"Authorization": f"Bearer {token}"}
+    with Session(engine) as session:
+        expected = session.execute(
+            select(
+                PayrollResultComponentModel.payroll_result_component_id,
+                PayrollRunModel.payroll_run_id,
+                PayrollResultModel.payroll_result_id,
+                PayrollResultModel.employee_id,
+                Employee.employee_code,
+                Employee.first_name,
+                Employee.last_name,
+                PayrollResultComponentModel.salary_component_id,
+                SalaryComponentModel.component_code,
+                SalaryComponentModel.component_name,
+                PayrollResultComponentModel.component_type,
+                PayrollResultComponentModel.amount,
+                PayrollResultComponentModel.calculation_order,
+                SalaryComponentModel.status,
+            )
+            .join(
+                PayrollResultModel,
+                PayrollResultModel.payroll_result_id
+                == PayrollResultComponentModel.payroll_result_id,
+            )
+            .join(PayrollRunModel, PayrollRunModel.payroll_run_id == PayrollResultModel.payroll_run_id)
+            .outerjoin(Employee, Employee.employee_id == PayrollResultModel.employee_id)
+            .join(
+                SalaryComponentModel,
+                SalaryComponentModel.salary_component_id
+                == PayrollResultComponentModel.salary_component_id,
+            )
+            .where(PayrollRunModel.payroll_run_id == seed.payroll_run_id)
+            .order_by(
+                PayrollResultModel.payroll_result_id,
+                PayrollResultComponentModel.salary_component_id,
+            )
+        ).all()
+        persisted_amounts_and_orders = [
+            (row.amount, row.calculation_order) for row in expected
+        ]
+        assert {row.component_type for row in expected} == {"EARNING", "DEDUCTION"}
+        assert any(row.salary_component_id == deduction_component_id for row in expected)
+        assert any(
+            row.component_name.startswith("Report Deduction ") and row.status == "INACTIVE"
+            for row in expected
+        )
+
+    expected_payload = [
+        {
+            "payroll_result_component_id": row.payroll_result_component_id,
+            "payroll_run_id": row.payroll_run_id,
+            "payroll_result_id": row.payroll_result_id,
+            "employee_id": row.employee_id,
+            "employee_code": row.employee_code,
+            "employee_name": f"{row.first_name} {row.last_name}",
+            "salary_component_id": row.salary_component_id,
+            "component_code": row.component_code,
+            "component_name": row.component_name,
+            "component_type": row.component_type,
+            "amount": str(row.amount),
+            "calculation_order": row.calculation_order,
+        }
+        for row in expected
+    ]
+
+    pages = []
+    cursor = None
+    with TestClient(app, raise_server_exceptions=False) as client:
+        while True:
+            response = client.get(
+                f"/api/v1/reports/payroll/runs/{seed.payroll_run_id}/components",
+                params={"limit": 1, **({"cursor": cursor} if cursor else {})},
+                headers=headers,
+            )
+            assert response.status_code == 200, response.text
+            page = response.json()
+            pages.extend(page["components"])
+            if not page["pagination"]["has_more"]:
+                assert page["pagination"]["next_cursor"] is None
+                break
+            cursor = page["pagination"]["next_cursor"]
+            assert cursor
+
+        employee_filter = client.get(
+            f"/api/v1/reports/payroll/runs/{seed.payroll_run_id}/components",
+            params={"employee_id": seed.employee_id},
+            headers=headers,
+        )
+        component_filter = client.get(
+            f"/api/v1/reports/payroll/runs/{seed.payroll_run_id}/components",
+            params={"salary_component_id": deduction_component_id},
+            headers=headers,
+        )
+        type_filter = client.get(
+            f"/api/v1/reports/payroll/runs/{seed.payroll_run_id}/components",
+            params={"component_type": "DEDUCTION"},
+            headers=headers,
+        )
+        other_run = client.get(
+            f"/api/v1/reports/payroll/runs/{other_run_id}/components",
+            headers=headers,
+        )
+
+    assert pages == expected_payload
+    assert len(pages) == 4
+    assert len({(row["payroll_result_id"], row["salary_component_id"]) for row in pages}) == 4
+    assert [(row["amount"], row["calculation_order"]) for row in pages] == [
+        (str(amount), order) for amount, order in persisted_amounts_and_orders
+    ]
+    for filtered in (employee_filter, component_filter, type_filter):
+        assert filtered.status_code == 200, filtered.text
+    assert {row["employee_id"] for row in employee_filter.json()["components"]} == {
+        seed.employee_id
+    }
+    assert {row["salary_component_id"] for row in component_filter.json()["components"]} == {
+        deduction_component_id
+    }
+    assert {row["component_type"] for row in type_filter.json()["components"]} == {
+        "DEDUCTION"
+    }
+    assert len(component_filter.json()["components"]) == 2
+    assert len(type_filter.json()["components"]) == 2
+    assert other_run.status_code == 200, other_run.text
+    assert len(other_run.json()["components"]) == 1
+    assert other_run.json()["components"][0]["payroll_run_id"] == other_run_id
+    assert all(row["payroll_run_id"] == seed.payroll_run_id for row in pages)
+
+
+def test_payroll_component_report_uses_persisted_authorization_and_run_state(
+    real_mysql_payroll,
+) -> None:
+    engine, seed = real_mysql_payroll
+    unprivileged_user_id, unprivileged_username = _add_report_unprivileged_user(
+        engine, seed
+    )
+    empty_finalized_run_id = _add_empty_finalized_run(engine, seed)
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    payroll_headers = {
+        "Authorization": f"Bearer {create_access_token(seed.user_id, seed.username)}"
+    }
+    unprivileged_headers = {
+        "Authorization": f"Bearer {create_access_token(unprivileged_user_id, unprivileged_username)}"
+    }
+    with TestClient(app, raise_server_exceptions=False) as client:
+        non_finalized = client.get(
+            f"/api/v1/reports/payroll/runs/{seed.payroll_run_id}/components",
+            headers=payroll_headers,
+        )
+        missing = client.get(
+            "/api/v1/reports/payroll/runs/999999999/components",
+            headers=payroll_headers,
+        )
+        empty = client.get(
+            f"/api/v1/reports/payroll/runs/{empty_finalized_run_id}/components",
+            headers=payroll_headers,
+        )
+        forbidden = client.get(
+            f"/api/v1/reports/payroll/runs/{empty_finalized_run_id}/components",
+            headers=unprivileged_headers,
+        )
+
+    assert non_finalized.status_code == 409, non_finalized.text
+    assert missing.status_code == 404, missing.text
+    assert empty.status_code == 200, empty.text
+    assert empty.json() == {
+        "payroll_run_id": empty_finalized_run_id,
+        "components": [],
+        "pagination": {"limit": 50, "has_more": False, "next_cursor": None},
+    }
+    assert forbidden.status_code == 403, forbidden.text
+
+
+def test_payroll_component_report_sanitizes_missing_definition_error(
+    real_mysql_payroll, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine, seed = real_mysql_payroll
+    _finalize_seed_run(seed)
+    from dataclasses import replace
+
+    from app.infrastructure.persistence.repositories.payroll_result_component_repository import (
+        PayrollResultComponentRepository,
+    )
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    original_list_report_page = PayrollResultComponentRepository.list_report_page
+
+    def report_missing_definition(self, *args, **kwargs):
+        records = original_list_report_page(self, *args, **kwargs)
+        if records:
+            records[0] = replace(
+                records[0],
+                salary_component_definition_exists=False,
+                component_code=None,
+                component_name=None,
+            )
+        return records
+
+    monkeypatch.setattr(
+        PayrollResultComponentRepository,
+        "list_report_page",
+        report_missing_definition,
+    )
+    token = create_access_token(seed.user_id, seed.username)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get(
+            f"/api/v1/reports/payroll/runs/{seed.payroll_run_id}/components",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 500
+    assert response.json()["error"]["message"] == "An unexpected error occurred."
+    assert "salary_component" not in response.text
+    assert "SELECT" not in response.text
+    assert str(seed.salary_component_id) not in response.text
+
+
 def test_employee_report_uses_seeded_hr_permission_and_filters_persisted_rows(
     real_mysql_payroll,
 ) -> None:
@@ -1187,6 +1428,85 @@ def _add_report_employee(engine, seed: SeededPayroll) -> None:
         seed.extra_salary_assignment_ids += (assignment.salary_assignment_id,)
 
 
+def _add_report_deduction_component(engine, seed: SeededPayroll) -> int:
+    """Add a fixture-owned deduction to the revision before payroll processing."""
+    from app.infrastructure.persistence.models.salary_component import SalaryComponentModel
+    from app.infrastructure.persistence.models.salary_revision_component import (
+        SalaryRevisionComponentModel,
+    )
+
+    marker = uuid4().hex[:12]
+    with Session(engine) as session:
+        component = SalaryComponentModel(
+            component_code=f"R9D{marker}",
+            component_name=f"Report Deduction {marker}",
+            component_type="DEDUCTION",
+            status="INACTIVE",
+        )
+        session.add(component)
+        session.flush()
+        session.add(
+            SalaryRevisionComponentModel(
+                salary_revision_id=seed.salary_revision_id,
+                salary_component_id=component.salary_component_id,
+                calculation_type="FIXED",
+                is_overtime_base=False,
+                fixed_amount=Decimal("250.00"),
+                percentage_value=None,
+                base_component_id=None,
+            )
+        )
+        session.commit()
+        seed.extra_salary_component_ids += (component.salary_component_id,)
+        return component.salary_component_id
+
+
+def _add_component_to_other_finalized_run(engine, seed: SeededPayroll, run_id: int) -> None:
+    """Create one valid persisted component row for a separate finalized run."""
+    from app.infrastructure.persistence.models.payroll_result import PayrollResultModel
+    from app.infrastructure.persistence.models.payroll_result_component import (
+        PayrollResultComponentModel,
+    )
+
+    with Session(engine) as session:
+        result = session.scalar(
+            select(PayrollResultModel).where(PayrollResultModel.payroll_run_id == run_id)
+        )
+        assert result is not None
+        session.add(
+            PayrollResultComponentModel(
+                payroll_result_id=result.payroll_result_id,
+                salary_component_id=seed.salary_component_id,
+                component_type="EARNING",
+                amount=Decimal("100.00"),
+                calculation_order=1,
+            )
+        )
+        session.commit()
+
+
+def _add_empty_finalized_run(engine, seed: SeededPayroll) -> int:
+    from app.infrastructure.persistence.models.payroll_run import PayrollRunModel
+
+    today = date.today()
+    year = today.year - 1 if today.month <= 2 else today.year
+    month = 12 if today.month == 1 else 1 if today.month == 2 else today.month - 2
+    finalized_at = datetime.now()
+    with Session(engine) as session:
+        run = PayrollRunModel(
+            payroll_year=year,
+            payroll_month=month,
+            status="FINALIZED",
+            initiated_by_user_id=seed.user_id,
+            completed_at=finalized_at,
+            finalized_at=finalized_at,
+        )
+        session.add(run)
+        session.commit()
+        seed.extra_payroll_run_ids += (run.payroll_run_id,)
+        return run.payroll_run_id
+
+
 def _add_report_unprivileged_user(engine, seed: SeededPayroll) -> tuple[int, str]:
     from app.infrastructure.persistence.models.user import User
     from app.infrastructure.security.password import hash_password
@@ -1542,7 +1862,13 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
         session.execute(delete(SalaryRevisionComponentModel).where(SalaryRevisionComponentModel.salary_revision_id == seed.salary_revision_id))
         session.execute(delete(SalaryRevisionModel).where(SalaryRevisionModel.salary_revision_id == seed.salary_revision_id))
         session.execute(delete(SalaryStructureModel).where(SalaryStructureModel.salary_structure_id == seed.salary_structure_id))
-        session.execute(delete(SalaryComponentModel).where(SalaryComponentModel.salary_component_id == seed.salary_component_id))
+        session.execute(
+            delete(SalaryComponentModel).where(
+                SalaryComponentModel.salary_component_id.in_(
+                    (seed.salary_component_id, *seed.extra_salary_component_ids)
+                )
+            )
+        )
         session.execute(delete(WorkCalendarWeeklyRuleModel).where(WorkCalendarWeeklyRuleModel.work_calendar_version_id == seed.calendar_version_id))
         session.execute(delete(WorkCalendarVersionModel).where(WorkCalendarVersionModel.work_calendar_version_id == seed.calendar_version_id))
         session.execute(delete(WorkforceOvertimePolicyVersionModel).where(WorkforceOvertimePolicyVersionModel.workforce_overtime_policy_version_id == seed.policy_version_id))

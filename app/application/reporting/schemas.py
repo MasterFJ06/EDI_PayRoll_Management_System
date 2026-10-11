@@ -43,6 +43,33 @@ class EmployeePayrollResultReportPage(BaseModel):
     pagination: PayrollResultsReportPagination
 
 
+class PayrollComponentReportRow(BaseModel):
+    payroll_result_component_id: int
+    payroll_run_id: int
+    payroll_result_id: int
+    employee_id: int
+    employee_code: str | None
+    employee_name: str | None
+    salary_component_id: int
+    component_code: str
+    component_name: str
+    component_type: Literal["EARNING", "DEDUCTION"]
+    amount: Decimal
+    calculation_order: int
+
+
+class PayrollComponentReportPagination(BaseModel):
+    limit: int = Field(ge=1, le=100)
+    has_more: bool
+    next_cursor: str | None
+
+
+class PayrollComponentReportPage(BaseModel):
+    payroll_run_id: int
+    components: list[PayrollComponentReportRow]
+    pagination: PayrollComponentReportPagination
+
+
 class EmployeeReportRow(BaseModel):
     employee_id: int
     employee_code: str

@@ -56,7 +56,7 @@ jobs:
       - name: Run payslip API contract tests
         run: python -m pytest -q tests/api/test_payslip_generation.py
 
-      - name: Run finalized payroll report API contract tests
+      - name: Run finalized payroll and component report API contract tests
         run: python -m pytest -q tests/api/test_payroll_report.py
 
       - name: Run employee report API contract tests
@@ -100,7 +100,7 @@ jobs:
           test "$target" = $'8\tepms_r7_runtime_test'
           echo "Verified MySQL target: $target"
 
-      - name: Run twenty-five strict payroll and workforce report MySQL integration tests (serial)
+      - name: Run twenty-eight strict payroll and workforce report MySQL integration tests (serial)
         run: python -m pytest -q tests/integration/test_mysql_payroll_processing.py
 
       - name: Run focused offline MySQL safety tests

@@ -6,6 +6,9 @@ from app.domain.payroll.payroll_processing_issue import PayrollProcessingIssue
 from app.domain.payroll.payroll_result import PayrollResult
 from app.domain.payroll.payroll_result_report import PayrollResultReportRecord
 from app.domain.payroll.payroll_result_component import PayrollResultComponent
+from app.domain.payroll.payroll_result_component_report import (
+    PayrollResultComponentReportRecord,
+)
 from app.domain.payroll.payroll_run import PayrollRun
 from app.domain.payroll.payroll_run_workforce_snapshot import (
     PayrollRunWorkforceSnapshot,
@@ -133,6 +136,18 @@ class PayrollResultComponentRepository(ABC):
 
     @abstractmethod
     def list_by_run(self, payroll_run_id: int) -> list[PayrollResultComponent]: ...
+
+    @abstractmethod
+    def list_report_page(
+        self,
+        payroll_run_id: int,
+        after_payroll_result_id: int | None,
+        after_salary_component_id: int | None,
+        employee_id: int | None,
+        salary_component_id: int | None,
+        component_type: str | None,
+        limit: int,
+    ) -> list[PayrollResultComponentReportRecord]: ...
 
     @abstractmethod
     def add(self, component: PayrollResultComponent) -> PayrollResultComponent: ...

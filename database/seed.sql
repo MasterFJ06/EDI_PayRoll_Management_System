@@ -13,7 +13,7 @@ VALUES
     ('payroll.run.retry', 'Retry a failed payroll run.'),
     ('payroll.run.finalize', 'Finalize a processed payroll run.'),
     ('payroll.payslip.create', 'Generate an individual payslip record.'),
-    ('report.payroll.read', 'View finalized payroll run summaries.'),
+    ('report.payroll.read', 'View finalized payroll run summaries, results, and component details.'),
     ('report.employee.read', 'View organization-wide employee reports.'),
     ('report.attendance.read', 'View organization-wide attendance reports.'),
     ('report.leave.read', 'View organization-wide Leave reports.'),

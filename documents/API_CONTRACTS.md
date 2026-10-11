@@ -483,8 +483,9 @@ their financial totals. QA prevents a zero-eligible run from reaching
 with no persisted Payroll Results therefore returns HTTP 409 rather than
 fabricated zero totals.
 
-Salary-component breakdowns, dashboards, CSV exports, and employee
-self-service reports are deferred.
+Dashboards, CSV exports, and employee self-service reports remain deferred.
+The later Finalized Payroll Component Breakdown contract below defines a
+separate report over persisted component rows without changing this summary.
 
 ### Phase 2B-9B — Paginated Employee Payroll Results
 
@@ -510,6 +511,71 @@ rows; `pagination` contains `limit`, `has_more`, and nullable `next_cursor`.
 There is no offset pagination or separate total-count query. Components,
 snapshots, attendance/leave details, contact/security data, and unrelated
 fields are not returned. No report-read audit event is written.
+
+### Finalized Payroll Component Breakdown Report
+
+`GET /api/v1/reports/payroll/runs/{run_id}/components` requires a positive
+`run_id`, authentication, and the persisted `report.payroll.read` permission,
+assigned to Payroll Administrator. This permission covers finalized Payroll
+Run summaries, Payroll Results, and component details; it does not implicitly
+grant access to HR Administrators or employees. Missing or invalid
+authentication returns HTTP 401; authenticated users without the permission
+receive HTTP 403.
+
+The endpoint is read-only and returns `payroll_run_id`, `components`, and
+`pagination`. Each component row contains exactly
+`payroll_result_component_id`, `payroll_run_id`, `payroll_result_id`,
+`employee_id`, `employee_code`, `employee_name`, `salary_component_id`,
+`component_code`, `component_name`, `component_type`, `amount`, and
+`calculation_order`. The component ID, result ID, salary component ID,
+persisted component type, persisted amount, and calculation order come from
+the Payroll Result Component. Run ID comes from its associated Payroll Run;
+employee ID comes from its Payroll Result. Employee code and full name use
+current Employee master data, and component code and name use the current
+Salary Component definition. Employee labels may be null when unavailable.
+Current labels are not historical snapshots. Inactive Salary Component
+definitions are included. Contact details, credentials, manager details,
+free-text fields, Workforce snapshots, and unrelated data are excluded.
+
+Amounts are returned as persisted without recalculation or modification. The
+endpoint does not return gross, deductions, net, component sums, or other
+derived financial totals. The existing Payroll summary and Payroll Results
+reports remain the sources for their contracted totals.
+
+The report includes one row per persisted Payroll Result Component belonging
+to a Payroll Result in the requested run and never includes another run's
+rows. A missing run returns HTTP 404; an existing run not in `FINALIZED`
+state returns HTTP 409. Invalid run IDs, filters, limits, or cursors return
+HTTP 422. A finalized run with zero persisted component rows returns HTTP 200
+with an empty component page; it is not independently converted to a
+conflict. Payroll QA remains a separate responsibility.
+
+The schema foreign key from `payroll_result_components.salary_component_id`
+to `salary_components.salary_component_id` uses `ON DELETE RESTRICT`. If an
+inconsistent persisted row nevertheless references a missing definition,
+the report detects the integrity anomaly, does not silently omit the
+component, and fails safely with a sanitized HTTP 500 integrity error using
+the centralized error response. Raw SQL, database internals, and sensitive
+record contents are not exposed.
+
+Optional filters are exact `employee_id`, exact `salary_component_id`, and
+`component_type` (`EARNING` or `DEDUCTION`). `limit` defaults to 50 and
+accepts values from 1 through 100. Results use bounded keyset pagination,
+fetching at most `limit + 1` rows, ordered ascending by
+`(payroll_result_id, salary_component_id)`. The pagination object contains
+`limit`, `has_more`, and nullable `next_cursor`.
+
+The opaque cursor uses the configured HMAC-SHA256 signing key, a
+component-report-specific discriminator, and binds report identity, requested
+run ID, active filters, and the last returned key tuple. Malformed, tampered,
+cross-run, cross-filter, and cross-report cursors return HTTP 422. No index or
+migration is introduced; any future index proposal requires query-plan and
+workload evidence.
+
+Run-state verification and component reads occur within the same Unit of Work
+transaction. The report does not write data or emit a report-read audit event.
+It respects the terminal `FINALIZED` state and existing immutability of final
+Payroll Results and Workforce snapshots.
 
 ### Phase 2B-9C-1 — Organization-Wide Employee Report
 
