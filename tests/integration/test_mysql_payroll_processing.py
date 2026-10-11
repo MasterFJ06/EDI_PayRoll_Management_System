@@ -50,6 +50,8 @@ class SeededPayroll:
     payroll_run_id: int
     correlation_id: str
     extra_employee_ids: tuple[int, ...] = ()
+    extra_salary_structure_ids: tuple[int, ...] = ()
+    extra_salary_revision_ids: tuple[int, ...] = ()
     extra_salary_assignment_ids: tuple[int, ...] = ()
     extra_salary_component_ids: tuple[int, ...] = ()
     extra_payroll_run_ids: tuple[int, ...] = ()
@@ -1833,6 +1835,14 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
         seed.salary_assignment_id,
         *seed.extra_salary_assignment_ids,
     )
+    owned_salary_revision_ids = (
+        seed.salary_revision_id,
+        *seed.extra_salary_revision_ids,
+    )
+    owned_salary_structure_ids = (
+        seed.salary_structure_id,
+        *seed.extra_salary_structure_ids,
+    )
     with Session(engine) as session, session.begin():
         result_ids = select(PayrollResultModel.payroll_result_id).where(
             PayrollResultModel.payroll_run_id.in_(owned_run_ids)
@@ -1859,9 +1869,25 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
         session.execute(delete(PayrollRunWorkforceSnapshotModel).where(PayrollRunWorkforceSnapshotModel.payroll_run_id.in_(owned_run_ids)))
         session.execute(delete(AttendanceRecord).where(AttendanceRecord.employee_id.in_(owned_employee_ids)))
         session.execute(delete(EmployeeSalaryAssignmentModel).where(EmployeeSalaryAssignmentModel.salary_assignment_id.in_(owned_assignment_ids)))
-        session.execute(delete(SalaryRevisionComponentModel).where(SalaryRevisionComponentModel.salary_revision_id == seed.salary_revision_id))
-        session.execute(delete(SalaryRevisionModel).where(SalaryRevisionModel.salary_revision_id == seed.salary_revision_id))
-        session.execute(delete(SalaryStructureModel).where(SalaryStructureModel.salary_structure_id == seed.salary_structure_id))
+        session.execute(
+            delete(SalaryRevisionComponentModel).where(
+                SalaryRevisionComponentModel.salary_revision_id.in_(
+                    owned_salary_revision_ids
+                )
+            )
+        )
+        session.execute(
+            delete(SalaryRevisionModel).where(
+                SalaryRevisionModel.salary_revision_id.in_(owned_salary_revision_ids)
+            )
+        )
+        session.execute(
+            delete(SalaryStructureModel).where(
+                SalaryStructureModel.salary_structure_id.in_(
+                    owned_salary_structure_ids
+                )
+            )
+        )
         session.execute(
             delete(SalaryComponentModel).where(
                 SalaryComponentModel.salary_component_id.in_(
@@ -1981,6 +2007,384 @@ def _get_or_create_permission(session: Session, code: str, description: str):
     session.add(permission)
     session.flush()
     return permission, True
+
+
+def test_compensation_salary_structure_create_persists(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+    from app.infrastructure.persistence.models.salary_structure import SalaryStructureModel
+
+    marker = uuid4().hex[:16]
+    payload = {
+        "structure_code": f"IT{marker}",
+        "structure_name": f"Integration Structure {marker}",
+        "description": "Disposable integration record",
+        "status": "ACTIVE",
+    }
+    token = create_access_token(seed.user_id, seed.username)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/api/v1/salary-structures",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 201, response.text
+    structure_id = response.json()["salary_structure_id"]
+    seed.extra_salary_structure_ids += (structure_id,)
+    with Session(engine) as session:
+        persisted = session.get(SalaryStructureModel, structure_id)
+        assert persisted is not None
+        assert persisted.structure_code == payload["structure_code"]
+        assert persisted.structure_name == payload["structure_name"]
+        assert persisted.description == payload["description"]
+        assert persisted.status == payload["status"]
+
+
+def test_compensation_salary_component_create_persists(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.salary_component import SalaryComponentModel
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    marker = uuid4().hex[:16]
+    payload = {
+        "component_code": f"IT{marker}",
+        "component_name": f"Integration Component {marker}",
+        "component_type": "DEDUCTION",
+        "status": "INACTIVE",
+    }
+    token = create_access_token(seed.user_id, seed.username)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/api/v1/salary-components",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 201, response.text
+    component_id = response.json()["salary_component_id"]
+    seed.extra_salary_component_ids += (component_id,)
+    with Session(engine) as session:
+        persisted = session.get(SalaryComponentModel, component_id)
+        assert persisted is not None
+        assert persisted.component_code == payload["component_code"]
+        assert persisted.component_name == payload["component_name"]
+        assert persisted.component_type == "DEDUCTION"
+        assert persisted.status == "INACTIVE"
+
+
+def test_compensation_salary_revision_create_persists(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.salary_revision import SalaryRevisionModel
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    payload = {
+        "salary_structure_id": seed.salary_structure_id,
+        "revision_number": 2,
+        "effective_from": "2100-01-01",
+        "effective_to": "2100-12-31",
+    }
+    token = create_access_token(seed.user_id, seed.username)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/api/v1/salary-revisions",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 201, response.text
+    revision_id = response.json()["salary_revision_id"]
+    seed.extra_salary_revision_ids += (revision_id,)
+    with Session(engine) as session:
+        persisted = session.get(SalaryRevisionModel, revision_id)
+        assert persisted is not None
+        assert persisted.salary_structure_id == seed.salary_structure_id
+        assert persisted.revision_number == 2
+        assert persisted.effective_from == date(2100, 1, 1)
+        assert persisted.effective_to == date(2100, 12, 31)
+
+
+def test_compensation_salary_revision_component_create_persists_and_rejects_cycle(
+    real_mysql_payroll,
+) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.salary_component import SalaryComponentModel
+    from app.infrastructure.persistence.models.salary_revision_component import (
+        SalaryRevisionComponentModel,
+    )
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    token = create_access_token(seed.user_id, seed.username)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        marker = uuid4().hex[:12]
+
+        def create_component(suffix: str) -> int:
+            response = client.post(
+                "/api/v1/salary-components",
+                json={
+                    "component_code": f"IT{marker}{suffix}",
+                    "component_name": f"Integration {suffix} {marker}",
+                    "component_type": "EARNING",
+                    "status": "ACTIVE",
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert response.status_code == 201, response.text
+            component_id = response.json()["salary_component_id"]
+            seed.extra_salary_component_ids += (component_id,)
+            return component_id
+
+        persisted_component_id = create_component("P")
+        fixed_payload = {
+            "salary_revision_id": seed.salary_revision_id,
+            "salary_component_id": persisted_component_id,
+            "calculation_type": "FIXED",
+            "fixed_amount": "1234.56",
+            "percentage_value": None,
+            "base_component_id": None,
+            "is_overtime_base": False,
+        }
+        response = client.post(
+            "/api/v1/salary-revision-components",
+            json=fixed_payload,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 201, response.text
+
+        cycle_a_id = create_component("A")
+        cycle_b_id = create_component("B")
+        cycle_a = client.post(
+            "/api/v1/salary-revision-components",
+            json={
+                "salary_revision_id": seed.salary_revision_id,
+                "salary_component_id": cycle_a_id,
+                "calculation_type": "PERCENTAGE",
+                "fixed_amount": None,
+                "percentage_value": "12.3456",
+                "base_component_id": cycle_b_id,
+                "is_overtime_base": False,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert cycle_a.status_code == 201, cycle_a.text
+        cycle_b = client.post(
+            "/api/v1/salary-revision-components",
+            json={
+                "salary_revision_id": seed.salary_revision_id,
+                "salary_component_id": cycle_b_id,
+                "calculation_type": "PERCENTAGE",
+                "fixed_amount": None,
+                "percentage_value": "1.2500",
+                "base_component_id": cycle_a_id,
+                "is_overtime_base": False,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert cycle_b.status_code == 409, cycle_b.text
+    assert cycle_b.json()["error"]["code"] == "BUSINESS_RULE_VIOLATION"
+    with Session(engine) as session:
+        fixed = session.get(
+            SalaryRevisionComponentModel,
+            (seed.salary_revision_id, persisted_component_id),
+        )
+        valid_percentage = session.get(
+            SalaryRevisionComponentModel,
+            (seed.salary_revision_id, cycle_a_id),
+        )
+        rejected_cycle = session.get(
+            SalaryRevisionComponentModel,
+            (seed.salary_revision_id, cycle_b_id),
+        )
+        assert fixed is not None
+        assert fixed.fixed_amount == Decimal("1234.56")
+        assert fixed.calculation_type == "FIXED"
+        assert valid_percentage is not None
+        assert valid_percentage.percentage_value == Decimal("12.3456")
+        assert rejected_cycle is None
+        # Component definitions are the valid parents for the persisted pivot rows.
+        assert session.get(SalaryComponentModel, cycle_a_id) is not None
+        assert session.get(SalaryComponentModel, cycle_b_id) is not None
+
+
+def test_compensation_employee_salary_assignment_create_persists(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.employee_salary_assignment import (
+        EmployeeSalaryAssignmentModel,
+    )
+    from app.infrastructure.persistence.models.salary_revision import SalaryRevisionModel
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    token = create_access_token(seed.user_id, seed.username)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        revision_response = client.post(
+            "/api/v1/salary-revisions",
+            json={
+                "salary_structure_id": seed.salary_structure_id,
+                "revision_number": 2,
+                "effective_from": "2100-01-01",
+                "effective_to": "2100-12-31",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert revision_response.status_code == 201, revision_response.text
+        revision_id = revision_response.json()["salary_revision_id"]
+        seed.extra_salary_revision_ids += (revision_id,)
+        payload = {
+            "employee_id": seed.employee_id,
+            "salary_revision_id": revision_id,
+            "effective_from": "2100-01-01",
+            "effective_to": "2100-12-31",
+        }
+        response = client.post(
+            "/api/v1/employee-salary-assignments",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 201, response.text
+    assignment_id = response.json()["salary_assignment_id"]
+    seed.extra_salary_assignment_ids += (assignment_id,)
+    with Session(engine) as session:
+        persisted = session.get(EmployeeSalaryAssignmentModel, assignment_id)
+        revision = session.get(SalaryRevisionModel, revision_id)
+        assert persisted is not None
+        assert revision is not None
+        assert persisted.employee_id == seed.employee_id
+        assert persisted.salary_revision_id == revision.salary_revision_id
+        assert persisted.effective_from == date(2100, 1, 1)
+        assert persisted.effective_to == date(2100, 12, 31)
+
+
+def test_compensation_schema_enforces_existing_unique_check_and_foreign_key_constraints(
+    real_mysql_payroll,
+) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    from app.infrastructure.persistence.models.employee_salary_assignment import (
+        EmployeeSalaryAssignmentModel,
+    )
+    from app.infrastructure.persistence.models.salary_component import SalaryComponentModel
+    from app.infrastructure.persistence.models.salary_revision import SalaryRevisionModel
+    from app.infrastructure.persistence.models.salary_revision_component import (
+        SalaryRevisionComponentModel,
+    )
+    from app.infrastructure.persistence.models.salary_structure import SalaryStructureModel
+
+    engine, seed = real_mysql_payroll
+    marker = uuid4().hex[:16]
+    with Session(engine) as session:
+        existing_structure = session.get(SalaryStructureModel, seed.salary_structure_id)
+        existing_component = session.get(SalaryComponentModel, seed.salary_component_id)
+        assert existing_structure is not None
+        assert existing_component is not None
+
+        def assert_rejected_by_database(record) -> None:
+            with pytest.raises(IntegrityError):
+                with session.begin_nested():
+                    session.add(record)
+                    session.flush()
+
+        assert_rejected_by_database(
+            SalaryStructureModel(
+                structure_code=existing_structure.structure_code,
+                structure_name=f"Duplicate structure {marker}",
+                status="ACTIVE",
+            )
+        )
+        assert_rejected_by_database(
+            SalaryComponentModel(
+                component_code=existing_component.component_code,
+                component_name=f"Duplicate component {marker}",
+                component_type="EARNING",
+                status="ACTIVE",
+            )
+        )
+        assert_rejected_by_database(
+            SalaryRevisionModel(
+                salary_structure_id=seed.salary_structure_id,
+                revision_number=1,
+                effective_from=date(2000, 1, 1),
+                effective_to=date(2099, 12, 31),
+            )
+        )
+        assert_rejected_by_database(
+            SalaryStructureModel(
+                structure_code=f"IT{marker}",
+                structure_name=f"Invalid status {marker}",
+                status="INVALID",
+            )
+        )
+        assert_rejected_by_database(
+            SalaryComponentModel(
+                component_code=f"IT{marker}",
+                component_name=f"Invalid type {marker}",
+                component_type="INVALID",
+                status="ACTIVE",
+            )
+        )
+        assert_rejected_by_database(
+            SalaryRevisionModel(
+                salary_structure_id=seed.salary_structure_id,
+                revision_number=2,
+                effective_from=date(2100, 1, 2),
+                effective_to=date(2100, 1, 1),
+            )
+        )
+        assert_rejected_by_database(
+            EmployeeSalaryAssignmentModel(
+                employee_id=seed.employee_id,
+                salary_revision_id=seed.salary_revision_id,
+                effective_from=date(2100, 1, 2),
+                effective_to=date(2100, 1, 1),
+            )
+        )
+        assert_rejected_by_database(
+            EmployeeSalaryAssignmentModel(
+                employee_id=9_223_372_036_854_770_000,
+                salary_revision_id=seed.salary_revision_id,
+                effective_from=date(2100, 1, 1),
+                effective_to=date(2100, 12, 31),
+            )
+        )
+
+        component = SalaryComponentModel(
+            component_code=f"ITC{marker}",
+            component_name=f"Constraint component {marker}",
+            component_type="EARNING",
+            status="ACTIVE",
+        )
+        session.add(component)
+        session.flush()
+        seed.extra_salary_component_ids += (component.salary_component_id,)
+        assert_rejected_by_database(
+            SalaryRevisionComponentModel(
+                salary_revision_id=seed.salary_revision_id,
+                salary_component_id=seed.salary_component_id,
+                calculation_type="FIXED",
+                fixed_amount=Decimal("5000.00"),
+                percentage_value=None,
+                base_component_id=None,
+                is_overtime_base=True,
+            )
+        )
+        assert_rejected_by_database(
+            SalaryRevisionComponentModel(
+                salary_revision_id=seed.salary_revision_id,
+                salary_component_id=component.salary_component_id,
+                calculation_type="FIXED",
+                fixed_amount=None,
+                percentage_value=None,
+                base_component_id=None,
+                is_overtime_base=False,
+            )
+        )
+        session.rollback()
 
 
 @dataclass(frozen=True)

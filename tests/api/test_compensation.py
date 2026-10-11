@@ -73,6 +73,13 @@ class FakeSalaryRevisionComponentRepository:
     ) -> SimpleNamespace | None:
         return self.records.get((revision_id, component_id))
 
+    def get_by_revision(self, revision_id: int) -> list[SimpleNamespace]:
+        return [
+            record
+            for (record_revision_id, _), record in sorted(self.records.items())
+            if record_revision_id == revision_id
+        ]
+
     def add(self, record: SimpleNamespace) -> SimpleNamespace:
         self.records[(record.salary_revision_id, record.salary_component_id)] = record
         return record
@@ -340,6 +347,47 @@ def test_create_percentage_salary_revision_component(client, fake_uow):
     assert response.status_code == 201
     assert response.json()["calculation_type"] == "PERCENTAGE"
     assert response.json()["percentage_value"] == "10.0000"
+
+
+def test_salary_revision_component_cycle_returns_business_error_without_commit(
+    client, fake_uow
+):
+    seed_revision(fake_uow)
+    seed_component(fake_uow)
+    fake_uow.salary_components.add(
+        SimpleNamespace(
+            salary_component_id=0,
+            component_code="ALLOWANCE",
+            component_name="Allowance",
+            component_type="EARNING",
+            status="ACTIVE",
+        )
+    )
+    fake_uow.salary_revision_components.records[(1, 1)] = SimpleNamespace(
+        salary_revision_id=1,
+        salary_component_id=1,
+        calculation_type="PERCENTAGE",
+        base_component_id=2,
+        is_overtime_base=False,
+    )
+
+    response = client.post(
+        "/api/v1/salary-revision-components",
+        json=revision_component_payload(
+            salary_component_id=2,
+            calculation_type="PERCENTAGE",
+            fixed_amount=None,
+            percentage_value="10.0000",
+            base_component_id=1,
+        ),
+        headers=authenticated_headers(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "BUSINESS_RULE_VIOLATION"
+    assert "dependencies contain a cycle" in response.json()["detail"]
+    assert response.json()["error"]["request_id"]
+    assert fake_uow.committed is False
 
 
 def test_create_employee_salary_assignment(client, fake_uow):
