@@ -29,7 +29,12 @@ class RecoveryRunRepository:
         return None if self.missing or run_id != 42 else self.run
 
     def lock_expired_processing_attempt(self, run_id: int):
-        if run_id != 42 or not self.expired or self.run.status != "PROCESSING":
+        if (
+            self.missing
+            or run_id != 42
+            or not self.expired
+            or self.run.status != "PROCESSING"
+        ):
             return None
         return self.run
 
