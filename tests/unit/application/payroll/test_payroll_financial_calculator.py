@@ -686,6 +686,9 @@ class _MemoryRepository:
     def lock_active_attempt(self, *_args):
         return None if self.stale else self.value or object()
 
+    def renew_active_attempt_lease(self, *_args):
+        return not self.stale
+
     def add(self, item):
         if hasattr(item, "payroll_result_id") and getattr(item, "payroll_result_id") is None:
             item.payroll_result_id = 11

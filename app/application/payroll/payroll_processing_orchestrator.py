@@ -155,6 +155,7 @@ class PayrollProcessingOrchestrator:
             )
             # End the consistent input read before opening the snapshot write transaction.
             self.uow.commit()
+            self._renew_attempt_lease(payroll_run_id, attempt_number)
             workforce_materializer.persist(
                 workforce_materialization,
                 attempt_number,
@@ -170,6 +171,7 @@ class PayrollProcessingOrchestrator:
                 workforce_snapshots=workforce_materialization.snapshots,
             )
             self._processing_pipeline_extension_point(payroll_run_id)
+            self._renew_attempt_lease(payroll_run_id, attempt_number)
             quality_assurance = PayrollQualityAssuranceService(self.uow).evaluate_and_transition(
                 payroll_run_id=payroll_run_id,
                 attempt_number=attempt_number,
@@ -263,6 +265,7 @@ class PayrollProcessingOrchestrator:
                     "No frozen Workforce snapshot exists for the eligible employee.",
                 )
                 self.uow.rollback()
+                self._renew_attempt_lease(payroll_run_id, attempt_number)
                 issue_id = service.record_blocking_issue(
                     payroll_run_id, employee_id, attempt_number, error
                 )
@@ -270,6 +273,7 @@ class PayrollProcessingOrchestrator:
                     issue_ids.append(issue_id)
                 continue
             try:
+                self._renew_attempt_lease(payroll_run_id, attempt_number)
                 service.calculate_employee(
                     payroll_run_id,
                     employee_id,
@@ -280,12 +284,23 @@ class PayrollProcessingOrchestrator:
                 )
             except PayrollCalculationError as error:
                 self.uow.rollback()
+                self._renew_attempt_lease(payroll_run_id, attempt_number)
                 issue_id = service.record_blocking_issue(
                     payroll_run_id, employee_id, attempt_number, error
                 )
                 if issue_id is not None:
                     issue_ids.append(issue_id)
         return tuple(issue_ids)
+
+    def _renew_attempt_lease(
+        self, payroll_run_id: int, attempt_number: int
+    ) -> None:
+        if not self.uow.payroll_runs.renew_active_attempt_lease(
+            payroll_run_id, attempt_number
+        ):
+            raise BusinessRuleViolation(
+                "Payroll processing attempt lease expired or was superseded."
+            )
 
     def _mark_failed_after_orchestration_error(
         self,

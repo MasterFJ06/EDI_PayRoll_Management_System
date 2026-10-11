@@ -62,6 +62,31 @@ def test_employee_report_fixture_seeds_and_cleans_only_hr_employee_read_access()
     assert "seed.created_permission_ids" in cleanup_body
 
 
+def test_recovery_permission_is_separate_and_seeded_for_payroll_administrator() -> None:
+    repository_root = Path(__file__).resolve().parents[4]
+    production_seed = (repository_root / "database/seed.sql").read_text(
+        encoding="utf-8"
+    )
+    fixture = (repository_root / "tests/integration/test_mysql_payroll_processing.py").read_text(
+        encoding="utf-8"
+    )
+    payroll_grant = production_seed.split(
+        "WHERE r.role_name = 'Payroll Administrator';", maxsplit=1
+    )[0]
+    assert "('payroll.run.recover'" in production_seed
+    assert "'payroll.run.recover'" in payroll_grant
+    hr_grant = production_seed.split(
+        "WHERE r.role_name = 'HR Administrator';", maxsplit=1
+    )[0].rsplit("INSERT IGNORE INTO role_permissions", maxsplit=1)[1]
+    assert "payroll.run.recover" not in hr_grant
+    seed_body = fixture.split("def _seed_valid_payroll", maxsplit=1)[1].split(
+        "def _cleanup_seed", maxsplit=1
+    )[0]
+    assert '"payroll.run.recover"' in seed_body
+    assert '"payroll.run.retry"' in seed_body
+    assert "seed.created_role_permission_ids" in fixture
+
+
 class _ScalarResult:
     def __init__(self, values: list[int]) -> None:
         self.values = values

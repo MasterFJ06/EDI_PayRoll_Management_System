@@ -260,9 +260,11 @@ Planned controls:
 
 Attempt-owned Payroll writes coordinate through the parent Payroll Run row lock
 and validate the current attempt. The approved attempt lease is 15 minutes and
-uses a database timestamp; lease renewal and crash recovery are later
-implementation work. Retry reconciliation and activation of a new attempt use
-one Unit of Work transaction.
+uses a database timestamp. The active attempt renews its lease at processing
+transaction boundaries. An operator may recover only an expired `PROCESSING`
+attempt to `FAILED`; recovery is audited atomically and does not start a retry.
+Retry reconciliation and activation of a new attempt use one Unit of Work
+transaction.
 
 ---
 

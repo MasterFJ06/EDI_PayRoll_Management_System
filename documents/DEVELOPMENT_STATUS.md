@@ -769,3 +769,19 @@ permission for Payroll Administrator, and returns bounded filter-bound
 keyset pages. The API route and focused API tests are implemented; isolated
 MySQL runtime validation has not yet been performed. No runtime validation is
 claimed for this report.
+
+## Payroll Management — Expired Payroll Attempt Recovery (Decision 45)
+
+Implemented the authenticated `POST /api/v1/payroll/runs/{run_id}/recover`
+operation with the dedicated `payroll.run.recover` permission assigned to
+Payroll Administrator. Recovery uses database time and a locked parent Payroll
+Run to transition only an expired `PROCESSING` attempt to `FAILED`, clearing
+the lease and atomically recording the recovery audit event. The attempt number
+is unchanged; the existing retry operation remains the only route to a new
+`PROCESSING` attempt. Lease renewal and existing artifact writers continue to
+fence expired or superseded attempts. No scheduler, schema change, or migration
+was added.
+
+Focused repository, API, existing Payroll, full unit, and database-safety
+validation results are to be recorded after execution. Strict ephemeral MySQL 8
+runtime validation is pending; no runtime result is claimed.

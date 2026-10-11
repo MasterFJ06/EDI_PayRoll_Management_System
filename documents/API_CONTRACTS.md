@@ -398,6 +398,35 @@ internally from the requested Payroll Run; it is not part of the public request
 or response contract. The transactional retry operation revalidates the attempt
 under the Payroll Run row lock.
 
+### Expired Payroll Attempt Recovery — Decision 45
+
+`POST /api/v1/payroll/runs/{run_id}/recover` accepts no request body and requires
+an active authenticated operator with the persisted `payroll.run.recover`
+permission, assigned to the existing Payroll Administrator role. The actor is
+derived from the authenticated user. Recovery succeeds only for a currently
+`PROCESSING` run whose non-null active-attempt lease has expired according to
+database time. It locks the parent Payroll Run and atomically changes the state
+to `FAILED`, clears the lease, and writes the
+`PAYROLL_RUN_ATTEMPT_RECOVERED` audit event. The event records the run ID,
+expired attempt number, actor, prior/new status, prior lease expiration,
+database-generated occurrence timestamp, and request correlation ID when
+available.
+
+Success returns HTTP 200 with the existing Payroll Run response and status
+`FAILED`; attempt number is unchanged. Missing runs return HTTP 404. A
+non-`PROCESSING` run, missing or unexpired lease, stale state, repeated request,
+or concurrent losing request returns HTTP 409. Unauthenticated and unauthorized
+requests return HTTP 401 and HTTP 403. Concurrent requests are serialized by
+the parent-row lock and conditional transition, so at most one succeeds.
+
+Recovery does not reconcile attempt artifacts, increment the attempt, restart,
+or finalize the run. The existing retry endpoint remains the only transition
+from `FAILED` to `PROCESSING` and performs the existing attempt reconciliation.
+Attempt-owned writers and lease renewal continue to validate the current
+processing attempt and its unexpired lease, fencing stale workers. The state
+transition and audit event share one Unit of Work transaction. No scheduler or
+background worker is introduced.
+
 ### Approved Payroll Run Finalization Contract
 
 `POST /api/v1/payroll/runs/{run_id}/finalize` requires an active authenticated
@@ -727,10 +756,12 @@ provide the user identity, role, or permission used for the decision.
 
 The development seed catalog includes the `Payroll Administrator` role and
 granular permissions `payroll.run.create`, `payroll.run.read`,
-`payroll.run.process`, `payroll.run.retry`, `payroll.run.finalize`,
+`payroll.run.process`, `payroll.run.retry`, `payroll.run.recover`,
+`payroll.run.finalize`,
 `payroll.payslip.create`, and `report.payroll.read`, plus the
 `HR Administrator` role with `report.employee.read` and
-`report.attendance.read`. The approved `report.leave.read` permission and HR
+`report.attendance.read`. `payroll.run.recover` is assigned only to the
+Payroll Administrator role. The approved `report.leave.read` permission and HR
 role assignment are pending implementation. No user is assigned to either
 role by the seed data. Implemented Payroll Run operations are
 documented in the Phase 2A, Phase 2B-1, retry, and finalization sections above.

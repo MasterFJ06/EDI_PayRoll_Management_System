@@ -37,6 +37,7 @@ class SeededPayroll:
     attendance_report_permission_id: int
     created_hr_attendance_role_permission: bool
     permission_id: int
+    recover_permission_id: int
     finalize_permission_id: int
     payslip_permission_id: int
     report_permission_id: int
@@ -1609,6 +1610,12 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
         permission, created_permission = _get_or_create_permission(
             session, "payroll.run.process", "R6 test"
         )
+        recover_permission, created_recover_permission = _get_or_create_permission(
+            session, "payroll.run.recover", "Expired attempt recovery"
+        )
+        retry_permission, created_retry_permission = _get_or_create_permission(
+            session, "payroll.run.retry", "Retry failed payroll attempt"
+        )
         finalize_permission, created_finalize_permission = _get_or_create_permission(
             session, "payroll.run.finalize", "R7 test"
         )
@@ -1656,6 +1663,8 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
         created_role_permission_ids = []
         for item in (
             permission,
+            recover_permission,
+            retry_permission,
             finalize_permission,
             payslip_permission,
             report_permission,
@@ -1772,6 +1781,7 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
             attendance_report_permission_id=attendance_report_permission.permission_id,
             created_hr_attendance_role_permission=created_hr_attendance_role_permission,
             permission_id=permission.permission_id,
+            recover_permission_id=recover_permission.permission_id,
             finalize_permission_id=finalize_permission.permission_id,
             payslip_permission_id=payslip_permission.permission_id,
             report_permission_id=report_permission.permission_id,
@@ -1779,6 +1789,8 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
                 item.permission_id
                 for item, created in (
                     (permission, created_permission),
+                    (recover_permission, created_recover_permission),
+                    (retry_permission, created_retry_permission),
                     (finalize_permission, created_finalize_permission),
                     (payslip_permission, created_payslip_permission),
                     (report_permission, created_report_permission),
@@ -3086,3 +3098,187 @@ def test_leave_balance_report_rejects_invalid_cursors_and_parameters(
             assert response.status_code == 422, (path, params, response.text)
             assert cursor not in response.text
             assert "signature" not in response.text.lower()
+
+
+def _recover_request(seed: SeededPayroll, *, user_id: int | None = None, username: str | None = None):
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    token = create_access_token(
+        user_id if user_id is not None else seed.user_id,
+        username if username is not None else seed.username,
+    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        return client.post(
+            f"/api/v1/payroll/runs/{seed.payroll_run_id}/recover",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+
+def _expire_attempt_for_recovery(engine, seed: SeededPayroll, attempt_number: int = 2) -> None:
+    from app.infrastructure.persistence.models.payroll_run import PayrollRunModel
+
+    with Session(engine) as session:
+        run = session.get(PayrollRunModel, seed.payroll_run_id)
+        assert run is not None
+        run.status = "PROCESSING"
+        run.attempt_number = attempt_number
+        run.attempt_lease_expires_at = datetime(2000, 1, 1)
+        session.commit()
+
+
+def test_expired_attempt_recovery_audits_and_retry_starts_next_fenced_attempt(
+    real_mysql_payroll,
+) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.audit_event import AuditEventModel
+    from app.infrastructure.persistence.models.audit_event_change import AuditEventChangeModel
+    from app.infrastructure.persistence.models.payroll_run import PayrollRunModel
+    from app.infrastructure.persistence.repositories.payroll_run_repository import PayrollRunRepository
+
+    _expire_attempt_for_recovery(engine, seed)
+    response = _recover_request(seed)
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "FAILED"
+    with Session(engine) as session:
+        run = session.get(PayrollRunModel, seed.payroll_run_id)
+        event = session.scalar(
+            select(AuditEventModel).where(
+                AuditEventModel.action_type == "PAYROLL_RUN_ATTEMPT_RECOVERED",
+                AuditEventModel.resource_id == seed.payroll_run_id,
+            )
+        )
+        assert run is not None
+        assert run.status == "FAILED" and run.attempt_number == 2
+        assert run.attempt_lease_expires_at is None
+        assert event is not None and event.actor_user_id == seed.user_id
+        assert event.correlation_id == response.headers["X-Request-ID"]
+        assert event.occurred_at is not None
+        changes = session.scalars(
+            select(AuditEventChangeModel).where(
+                AuditEventChangeModel.audit_event_id == event.audit_event_id
+            )
+        ).all()
+        assert {change.field_name: (change.old_value, change.new_value) for change in changes} == {
+            "payroll_run_id": (None, str(seed.payroll_run_id)),
+            "attempt_number": (None, "2"),
+            "status": ("PROCESSING", "FAILED"),
+            "attempt_lease_expires_at": ("2000-01-01T00:00:00", None),
+        }
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    token = create_access_token(seed.user_id, seed.username)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        retry = client.post(
+            f"/api/v1/payroll/runs/{seed.payroll_run_id}/retry",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["status"] == "PROCESSING"
+    with Session(engine) as session:
+        run = session.get(PayrollRunModel, seed.payroll_run_id)
+        assert run is not None and run.attempt_number == 3
+        assert PayrollRunRepository(session).lock_active_attempt(seed.payroll_run_id, 2) is None
+
+
+def test_recovery_rejects_missing_wrong_state_and_unexpired_attempt(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.payroll_run import PayrollRunModel
+
+    missing = SeededPayroll(**{**vars(seed), "payroll_run_id": seed.payroll_run_id + 999999})
+    assert _recover_request(missing).status_code == 404
+    assert _recover_request(seed).status_code == 409
+    with Session(engine) as session:
+        run = session.get(PayrollRunModel, seed.payroll_run_id)
+        assert run is not None
+        run.status = "PROCESSING"
+        run.attempt_number = 1
+        run.attempt_lease_expires_at = datetime(2999, 1, 1)
+        session.commit()
+    response = _recover_request(seed)
+    assert response.status_code == 409
+    with Session(engine) as session:
+        run = session.get(PayrollRunModel, seed.payroll_run_id)
+        assert run is not None
+        assert run.status == "PROCESSING" and run.attempt_number == 1
+        assert run.attempt_lease_expires_at == datetime(2999, 1, 1)
+
+
+def test_concurrent_expired_attempt_recovery_has_one_winner(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.audit_event import AuditEventModel
+
+    _expire_attempt_for_recovery(engine, seed)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(lambda _index: _recover_request(seed), range(2)))
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    with Session(engine) as session:
+        assert session.scalar(
+            select(func.count(AuditEventModel.audit_event_id)).where(
+                AuditEventModel.action_type == "PAYROLL_RUN_ATTEMPT_RECOVERED",
+                AuditEventModel.resource_id == seed.payroll_run_id,
+            )
+        ) == 1
+
+
+def test_recovery_and_audit_roll_back_together_on_audit_failure(
+    real_mysql_payroll, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.audit_event import AuditEventModel
+    from app.infrastructure.persistence.models.payroll_run import PayrollRunModel
+    from app.infrastructure.persistence.repositories.audit_event_repository import AuditEventRepository
+
+    _expire_attempt_for_recovery(engine, seed)
+    original_add = AuditEventRepository.add
+
+    def fail_recovery_audit(repository, event, changes=()):
+        if event.action_type == "PAYROLL_RUN_ATTEMPT_RECOVERED":
+            raise RuntimeError("controlled recovery audit failure")
+        return original_add(repository, event, changes)
+
+    monkeypatch.setattr(AuditEventRepository, "add", fail_recovery_audit)
+    response = _recover_request(seed)
+    assert response.status_code == 500
+    with Session(engine) as session:
+        run = session.get(PayrollRunModel, seed.payroll_run_id)
+        audit = session.scalar(
+            select(AuditEventModel).where(
+                AuditEventModel.action_type == "PAYROLL_RUN_ATTEMPT_RECOVERED",
+                AuditEventModel.resource_id == seed.payroll_run_id,
+            )
+        )
+        assert run is not None
+        assert run.status == "PROCESSING" and run.attempt_number == 2
+        assert run.attempt_lease_expires_at is not None
+        assert audit is None
+
+
+def test_recovery_requires_persisted_permission(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.role import Role
+    from app.infrastructure.persistence.models.user import User
+    from app.infrastructure.persistence.models.user_role import UserRole
+    from app.infrastructure.security.password import hash_password
+
+    _expire_attempt_for_recovery(engine, seed)
+    username = f"r6_no_recover_{uuid4().hex[:12]}"
+    with Session(engine) as session:
+        hr_role = session.scalar(select(Role).where(Role.role_name == "HR Administrator"))
+        assert hr_role is not None
+        user = User(
+            username=username,
+            email=f"{username}@example.invalid",
+            password_hash=hash_password("synthetic integration-only password"),
+            status="ACTIVE",
+        )
+        session.add(user)
+        session.flush()
+        session.add(UserRole(user_id=user.user_id, role_id=hr_role.role_id, assigned_by_user_id=seed.user_id))
+        session.commit()
+        user_id = user.user_id
+        seed.extra_users += ((user_id, username),)
+
+    response = _recover_request(seed, user_id=user_id, username=username)
+    assert response.status_code == 403

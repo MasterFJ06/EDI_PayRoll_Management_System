@@ -236,6 +236,60 @@ def test_attempt_fence_rejects_non_processing_run(tmp_path) -> None:
     engine.dispose()
 
 
+def test_lease_renewal_only_extends_current_unexpired_attempt(tmp_path) -> None:
+    engine = _engine_with_created_run(str(tmp_path / "lease-renewal.sqlite"))
+    with Session(engine) as session:
+        repository = PayrollRunRepository(session)
+        assert repository.claim_for_processing(77) == 1
+        session.commit()
+        original_expiry = session.scalar(
+            text("SELECT attempt_lease_expires_at FROM payroll_runs WHERE payroll_run_id = 77")
+        )
+        assert repository.renew_active_attempt_lease(77, 1) is True
+        session.commit()
+        renewed_expiry = session.scalar(
+            text("SELECT attempt_lease_expires_at FROM payroll_runs WHERE payroll_run_id = 77")
+        )
+        assert renewed_expiry >= original_expiry
+        assert repository.renew_active_attempt_lease(77, 2) is False
+        session.execute(
+            text(
+                "UPDATE payroll_runs SET attempt_lease_expires_at = "
+                "datetime(CURRENT_TIMESTAMP, '-1 second') WHERE payroll_run_id = 77"
+            )
+        )
+        session.commit()
+        assert repository.renew_active_attempt_lease(77, 1) is False
+        session.rollback()
+    engine.dispose()
+
+
+def test_recovery_requires_expired_current_processing_attempt(tmp_path) -> None:
+    engine = _engine_with_created_run(str(tmp_path / "attempt-recovery.sqlite"))
+    with Session(engine) as session:
+        repository = PayrollRunRepository(session)
+        assert repository.recover_expired_attempt(77, 1) is False
+        assert repository.claim_for_processing(77) == 1
+        session.execute(
+            text(
+                "UPDATE payroll_runs SET attempt_lease_expires_at = "
+                "datetime(CURRENT_TIMESTAMP, '-1 second') WHERE payroll_run_id = 77"
+            )
+        )
+        session.commit()
+        expired = repository.lock_expired_processing_attempt(77)
+        assert expired is not None
+        assert repository.recover_expired_attempt(77, 2) is False
+        assert repository.recover_expired_attempt(77, 1) is True
+        session.commit()
+        recovered = repository.get_by_id(77)
+        assert recovered.status == "FAILED"
+        assert recovered.attempt_number == 1
+        assert recovered.attempt_lease_expires_at is None
+        assert repository.lock_expired_processing_attempt(77) is None
+    engine.dispose()
+
+
 def test_mysql_lease_expression_uses_database_current_timestamp() -> None:
     expression = PayrollRunRepository._lease_expiration("mysql", 900)
     compiled = str(expression.compile(dialect=mysql.dialect()))

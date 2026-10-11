@@ -61,6 +61,9 @@ class ProcessingRunRepository:
             return None
         return self.run
 
+    def renew_active_attempt_lease(self, run_id: int, attempt_number: int) -> bool:
+        return self.lock_active_attempt(run_id, attempt_number) is not None
+
     def mark_processed_if_processing(self, run_id: int, attempt_number: int) -> bool:
         if self.lock_active_attempt(run_id, attempt_number) is None:
             return False

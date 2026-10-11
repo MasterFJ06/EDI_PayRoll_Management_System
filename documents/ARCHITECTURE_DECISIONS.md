@@ -189,9 +189,10 @@ reconciliation.
 
 The operational lease duration is `PAYROLL_ATTEMPT_LEASE_SECONDS = 900`
 (15 minutes). The expiration is stored in `payroll_runs.attempt_lease_expires_at`
-using a database timestamp. The active owner renews the lease; guarded writes
-validate it, and crash recovery uses it. Lease renewal and recovery are later
-implementation work. No heartbeat cadence is established here.
+using a database timestamp. The active owner renews the lease at processing
+transaction boundaries; guarded writes validate it. Decision 45 defines
+operator-triggered recovery for expired attempts. No periodic heartbeat cadence
+is established here.
 
 ---
 
@@ -995,3 +996,26 @@ respects the existing terminal `FINALIZED` state and immutability of final
 Payroll Results and Workforce snapshots. This decision authorizes the
 component breakdown previously deferred by Decision 39 without changing the
 summary contract or the other deferred reporting capabilities.
+
+---
+
+# Decision 45 — Expired Payroll Attempt Recovery
+
+An authenticated operator with the persisted `payroll.run.recover` permission
+may recover a Payroll Run only when it is currently `PROCESSING` and its active
+attempt lease has expired according to database time. Recovery locks the parent
+Payroll Run and atomically changes its status to `FAILED`, clears the lease, and
+writes the `PAYROLL_RUN_ATTEMPT_RECOVERED` audit event. The event records the
+run ID, expired attempt number, acting user, previous and new status, prior lease
+expiration, database-generated occurrence timestamp, and request correlation ID
+when available. At most one concurrent recovery succeeds.
+
+Recovery does not increment the attempt number, reconcile attempt artifacts,
+transition directly to `PROCESSING`, or finalize the run. The existing controlled
+retry operation remains the sole `FAILED` to `PROCESSING` transition and performs
+its existing reconciliation. A subsequent retry increments the attempt number,
+so writes by a stale worker are fenced. Lease renewal is allowed only for the
+current `PROCESSING` attempt while its lease remains unexpired; renewal uses
+database time and cannot revive an expired or superseded attempt. Processing
+renews at its transaction boundaries; no background scheduler or periodic
+heartbeat cadence is introduced by this decision.
