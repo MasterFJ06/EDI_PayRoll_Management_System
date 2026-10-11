@@ -2264,7 +2264,7 @@ def test_compensation_employee_salary_assignment_create_persists(real_mysql_payr
 def test_compensation_schema_enforces_existing_unique_check_and_foreign_key_constraints(
     real_mysql_payroll,
 ) -> None:
-    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.exc import DBAPIError
 
     from app.infrastructure.persistence.models.employee_salary_assignment import (
         EmployeeSalaryAssignmentModel,
@@ -2284,73 +2284,82 @@ def test_compensation_schema_enforces_existing_unique_check_and_foreign_key_cons
         assert existing_structure is not None
         assert existing_component is not None
 
-        def assert_rejected_by_database(record) -> None:
-            with pytest.raises(IntegrityError):
+        def assert_rejected_by_mysql(record, expected_error_code: int) -> None:
+            with pytest.raises(DBAPIError) as error:
                 with session.begin_nested():
                     session.add(record)
                     session.flush()
+            assert error.value.orig.args[0] == expected_error_code
 
-        assert_rejected_by_database(
+        assert_rejected_by_mysql(
             SalaryStructureModel(
                 structure_code=existing_structure.structure_code,
                 structure_name=f"Duplicate structure {marker}",
                 status="ACTIVE",
-            )
+            ),
+            1062,
         )
-        assert_rejected_by_database(
+        assert_rejected_by_mysql(
             SalaryComponentModel(
                 component_code=existing_component.component_code,
                 component_name=f"Duplicate component {marker}",
                 component_type="EARNING",
                 status="ACTIVE",
-            )
+            ),
+            1062,
         )
-        assert_rejected_by_database(
+        assert_rejected_by_mysql(
             SalaryRevisionModel(
                 salary_structure_id=seed.salary_structure_id,
                 revision_number=1,
                 effective_from=date(2000, 1, 1),
                 effective_to=date(2099, 12, 31),
-            )
+            ),
+            1062,
         )
-        assert_rejected_by_database(
+        assert_rejected_by_mysql(
             SalaryStructureModel(
                 structure_code=f"IT{marker}",
                 structure_name=f"Invalid status {marker}",
                 status="INVALID",
-            )
+            ),
+            3819,
         )
-        assert_rejected_by_database(
+        assert_rejected_by_mysql(
             SalaryComponentModel(
                 component_code=f"IT{marker}",
                 component_name=f"Invalid type {marker}",
                 component_type="INVALID",
                 status="ACTIVE",
-            )
+            ),
+            3819,
         )
-        assert_rejected_by_database(
+        assert_rejected_by_mysql(
             SalaryRevisionModel(
                 salary_structure_id=seed.salary_structure_id,
                 revision_number=2,
                 effective_from=date(2100, 1, 2),
                 effective_to=date(2100, 1, 1),
-            )
+            ),
+            3819,
         )
-        assert_rejected_by_database(
+        assert_rejected_by_mysql(
             EmployeeSalaryAssignmentModel(
                 employee_id=seed.employee_id,
                 salary_revision_id=seed.salary_revision_id,
                 effective_from=date(2100, 1, 2),
                 effective_to=date(2100, 1, 1),
-            )
+            ),
+            3819,
         )
-        assert_rejected_by_database(
+        assert_rejected_by_mysql(
             EmployeeSalaryAssignmentModel(
                 employee_id=9_223_372_036_854_770_000,
                 salary_revision_id=seed.salary_revision_id,
                 effective_from=date(2100, 1, 1),
                 effective_to=date(2100, 12, 31),
-            )
+            ),
+            1452,
         )
 
         component = SalaryComponentModel(
@@ -2362,7 +2371,7 @@ def test_compensation_schema_enforces_existing_unique_check_and_foreign_key_cons
         session.add(component)
         session.flush()
         seed.extra_salary_component_ids += (component.salary_component_id,)
-        assert_rejected_by_database(
+        assert_rejected_by_mysql(
             SalaryRevisionComponentModel(
                 salary_revision_id=seed.salary_revision_id,
                 salary_component_id=seed.salary_component_id,
@@ -2371,9 +2380,10 @@ def test_compensation_schema_enforces_existing_unique_check_and_foreign_key_cons
                 percentage_value=None,
                 base_component_id=None,
                 is_overtime_base=True,
-            )
+            ),
+            1062,
         )
-        assert_rejected_by_database(
+        assert_rejected_by_mysql(
             SalaryRevisionComponentModel(
                 salary_revision_id=seed.salary_revision_id,
                 salary_component_id=component.salary_component_id,
@@ -2382,7 +2392,8 @@ def test_compensation_schema_enforces_existing_unique_check_and_foreign_key_cons
                 percentage_value=None,
                 base_component_id=None,
                 is_overtime_base=False,
-            )
+            ),
+            3819,
         )
         session.rollback()
 
