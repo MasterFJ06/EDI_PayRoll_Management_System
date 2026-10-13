@@ -349,6 +349,7 @@ def test_create_leave_balance_denies_other_employee_without_permission(client, f
 
 
 def test_create_leave_balance_hr_permission_allows_other_employee(client, fake_uow):
+    seed_leave_type(fake_uow)
     response = client.post(
         "/api/v1/leave-balances",
         json=leave_balance_payload(employee_id=5),
