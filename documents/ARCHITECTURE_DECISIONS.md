@@ -1019,3 +1019,46 @@ current `PROCESSING` attempt while its lease remains unexpired; renewal uses
 database time and cannot revive an expired or superseded attempt. Processing
 renews at its transaction boundaries; no background scheduler or periodic
 heartbeat cadence is introduced by this decision.
+
+---
+
+# Decision 46 — Opaque Refresh-Token Rotation and Session Revocation
+
+Successful login issues the existing short-lived access JWT and a separate,
+opaque cryptographically random refresh credential with the configured
+`refresh_token_expire_days` lifetime (seven days by default). Only the
+lowercase SHA-256 digest is persisted. Each login creates a distinct refresh
+token family; rotation preserves that family and replaces the submitted
+credential exactly once.
+
+`POST /api/v1/auth/refresh` locks the persisted token row, checks database time
+and the associated user's active status, revokes the consumed token, persists a
+replacement in the same Unit of Work transaction, and returns a new access and
+refresh token pair. Concurrent submissions can produce at most one successful
+rotation. Reuse of a consumed token revokes every still-active refresh token in
+that token family, but no other family belonging to the user. All rows in a
+token family are locked in ascending token ID order, and the user row is locked
+while validating issuance/rotation, so account deactivation and
+concurrent token use cannot authorize a stale refresh. Invalid, expired,
+revoked, and replayed refresh credentials have the same HTTP 401 response.
+
+`POST /api/v1/auth/logout` revokes all active refresh credentials in the
+submitted token's family. Repeating logout with a token already known to the
+system is idempotent. Unknown credentials return the generic refresh-token
+HTTP 401. Refresh and logout use the refresh credential as their sole
+authentication factor; they do not require an access JWT.
+
+Revoking refresh credentials does not invalidate already-issued access JWTs;
+they retain their configured lifetime. Existing current-user active-account
+checks and per-request persisted RBAC checks remain in force. The lifecycle
+does not add refresh-token values to logs, audit payloads, or database fields.
+This decision adds no token lifecycle audit-event requirement: the existing
+audit/security-event tables have no established refresh-event policy, so no
+new audit event is emitted. The session-family field is used only to scope
+revocation.
+
+The `refresh_tokens` table is part of the authoritative schema and has a
+forward migration from the existing migration head. CI continues to initialize
+from the prepared schema snapshot and does not apply Alembic over that
+snapshot. Downgrading the lifecycle migration drops the table and invalidates
+all refresh sessions.

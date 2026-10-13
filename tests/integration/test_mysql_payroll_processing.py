@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 class SeededPayroll:
     user_id: int
     username: str
+    password: str
     employee_id: int
     department_id: int
     designation_id: int
@@ -80,7 +81,7 @@ def real_mysql_payroll(mysql_test_engine, monkeypatch: pytest.MonkeyPatch):
             jwt_secret_key=uuid4().hex,
             jwt_algorithm="HS256",
             access_token_expire_minutes=15,
-            refresh_token_expire_days=1,
+            refresh_token_expire_days=7,
             payroll_worker_count=1,
             payroll_attempt_lease_seconds=900,
         ),
@@ -1770,6 +1771,7 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
         return SeededPayroll(
             user_id=user.user_id,
             username=user.username,
+            password="R6-only synthetic credential",
             employee_id=employee.employee_id,
             department_id=department.department_id,
             designation_id=designation.designation_id,
@@ -1831,6 +1833,7 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
     from app.infrastructure.persistence.models.payroll_run_workforce_snapshot import PayrollRunWorkforceSnapshotModel
     from app.infrastructure.persistence.models.payslip import PayslipModel
     from app.infrastructure.persistence.models.permission import Permission
+    from app.infrastructure.persistence.models.refresh_token import RefreshToken
     from app.infrastructure.persistence.models.role import Role
     from app.infrastructure.persistence.models.role_permission import RolePermission
     from app.infrastructure.persistence.models.salary_component import SalaryComponentModel
@@ -1874,6 +1877,9 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
             seed.payroll_run_id,
             owned_payslip_ids,
             seed.user_id,
+        )
+        session.execute(
+            delete(RefreshToken).where(RefreshToken.user_id.in_(owned_user_ids))
         )
         session.execute(delete(PayslipModel).where(
             PayslipModel.payslip_id.in_(owned_payslip_ids)
@@ -3285,3 +3291,228 @@ def test_recovery_requires_persisted_permission(real_mysql_payroll) -> None:
 
     response = _recover_request(seed, user_id=user_id, username=username)
     assert response.status_code == 403
+
+
+def _login_refresh(engine, seed) -> dict[str, str]:
+    from app.main import app
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/api/v1/auth/login",
+            json={"username": seed.username, "password": seed.password},
+        )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _post_refresh(token: str):
+    from app.main import app
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        return client.post("/api/v1/auth/refresh", json={"refresh_token": token})
+
+
+def test_login_persists_only_hash_and_returns_configured_refresh_credential(
+    real_mysql_payroll,
+) -> None:
+    engine, seed = real_mysql_payroll
+    from app.core.config import get_settings
+    from app.infrastructure.persistence.models.refresh_token import RefreshToken
+    from app.infrastructure.security.refresh_token import hash_refresh_token
+
+    response = _login_refresh(engine, seed)
+    with Session(engine) as session:
+        row = session.scalar(
+            select(RefreshToken).where(RefreshToken.user_id == seed.user_id)
+        )
+        assert row is not None
+        assert row.token_hash == hash_refresh_token(response["refresh_token"])
+        assert response["refresh_token"] not in row.token_hash
+        lifetime = row.expires_at - row.created_at
+        configured_lifetime = timedelta(days=get_settings().refresh_token_expire_days)
+        assert configured_lifetime - timedelta(seconds=1) <= lifetime <= configured_lifetime
+        assert row.family_id
+    assert set(response) == {"access_token", "refresh_token", "token_type"}
+
+
+def test_refresh_rotation_replay_revokes_only_its_family(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.refresh_token import RefreshToken
+    from app.infrastructure.security.refresh_token import hash_refresh_token
+
+    first_login = _login_refresh(engine, seed)
+    other_login = _login_refresh(engine, seed)
+    with Session(engine) as session:
+        first_row = session.scalar(select(RefreshToken).where(
+            RefreshToken.token_hash == hash_refresh_token(first_login["refresh_token"])
+        ))
+        other_row = session.scalar(select(RefreshToken).where(
+            RefreshToken.token_hash == hash_refresh_token(other_login["refresh_token"])
+        ))
+        assert first_row is not None and other_row is not None
+        first_family, other_family = first_row.family_id, other_row.family_id
+    rotated = _post_refresh(first_login["refresh_token"])
+    assert rotated.status_code == 200, rotated.text
+    replay = _post_refresh(first_login["refresh_token"])
+    assert replay.status_code == 401
+    assert replay.json() == {"detail": "Invalid or expired refresh token."}
+    other_session_rotation = _post_refresh(other_login["refresh_token"])
+    assert other_session_rotation.status_code == 200, other_session_rotation.text
+
+    with Session(engine) as session:
+        rows = list(session.scalars(select(RefreshToken).where(RefreshToken.user_id == seed.user_id)))
+        first_family_rows = [row for row in rows if row.family_id == first_family]
+        other_family_rows = [row for row in rows if row.family_id == other_family]
+        assert len(first_family_rows) == 2
+        assert all(row.revoked_at is not None for row in first_family_rows)
+        assert len(other_family_rows) == 2
+        assert sum(row.revoked_at is None for row in other_family_rows) == 1
+
+
+def test_refresh_invalid_expired_and_revoked_credentials_share_401(
+    real_mysql_payroll,
+) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.refresh_token import RefreshToken
+    from app.infrastructure.security.refresh_token import hash_refresh_token
+
+    expired_login = _login_refresh(engine, seed)
+    revoked_login = _login_refresh(engine, seed)
+    with Session(engine) as session:
+        expired = session.scalar(select(RefreshToken).where(
+            RefreshToken.token_hash == hash_refresh_token(expired_login["refresh_token"])
+        ))
+        assert expired is not None
+        revoked = session.scalar(
+            select(RefreshToken).where(RefreshToken.user_id == seed.user_id)
+            .where(RefreshToken.family_id != expired.family_id)
+        )
+        assert revoked is not None
+        expired.expires_at = datetime(2000, 1, 1)
+        revoked.revoked_at = datetime.now()
+        session.commit()
+
+    responses = [
+        _post_refresh("unknown-invalid-token"),
+        _post_refresh(expired_login["refresh_token"]),
+        _post_refresh(revoked_login["refresh_token"]),
+    ]
+    assert [response.status_code for response in responses] == [401, 401, 401]
+    assert {response.text for response in responses} == {
+        '{"detail":"Invalid or expired refresh token."}'
+    }
+
+
+def test_concurrent_refresh_use_has_at_most_one_success(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    credential = _login_refresh(engine, seed)["refresh_token"]
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(lambda _index: _post_refresh(credential), range(2)))
+    assert sorted(response.status_code for response in responses) == [200, 401]
+
+
+def test_logout_is_idempotent_and_session_scoped(real_mysql_payroll) -> None:
+    from app.main import app
+
+    engine, seed = real_mysql_payroll
+    first = _login_refresh(engine, seed)["refresh_token"]
+    other = _login_refresh(engine, seed)["refresh_token"]
+    with TestClient(app, raise_server_exceptions=False) as client:
+        logged_out = client.post("/api/v1/auth/logout", json={"refresh_token": first})
+        repeated = client.post("/api/v1/auth/logout", json={"refresh_token": first})
+    assert logged_out.status_code == repeated.status_code == 204
+    assert _post_refresh(first).status_code == 401
+    assert _post_refresh(other).status_code == 200
+
+
+def test_refresh_rejects_inactive_user_and_revokes_family(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    credential = _login_refresh(engine, seed)["refresh_token"]
+    from app.infrastructure.persistence.models.refresh_token import RefreshToken
+    from app.infrastructure.persistence.models.user import User
+    from app.infrastructure.security.refresh_token import hash_refresh_token
+
+    with Session(engine) as session:
+        user = session.get(User, seed.user_id)
+        row = session.scalar(select(RefreshToken).where(
+            RefreshToken.token_hash == hash_refresh_token(credential)
+        ))
+        assert user is not None and row is not None
+        family_id = row.family_id
+        user.status = "DISABLED"
+        session.commit()
+
+    response = _post_refresh(credential)
+    assert response.status_code == 401
+    with Session(engine) as session:
+        family_rows = list(session.scalars(select(RefreshToken).where(
+            RefreshToken.family_id == family_id
+        )))
+        assert family_rows and all(row.revoked_at is not None for row in family_rows)
+
+
+def test_refresh_rotation_rolls_back_if_replacement_insert_fails(
+    real_mysql_payroll, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine, seed = real_mysql_payroll
+    credential = _login_refresh(engine, seed)["refresh_token"]
+    from app.infrastructure.persistence.models.refresh_token import RefreshToken
+    from app.infrastructure.persistence.repositories.refresh_token_repository import (
+        RefreshTokenRepository,
+    )
+    from app.infrastructure.security.refresh_token import hash_refresh_token
+
+    original_add = RefreshTokenRepository.add
+
+    def fail_replacement(repository, row):
+        raise RuntimeError("controlled replacement persistence failure")
+
+    monkeypatch.setattr(RefreshTokenRepository, "add", fail_replacement)
+    response = _post_refresh(credential)
+    assert response.status_code == 500
+    monkeypatch.setattr(RefreshTokenRepository, "add", original_add)
+    with Session(engine) as session:
+        row = session.scalar(select(RefreshToken).where(
+            RefreshToken.token_hash == hash_refresh_token(credential)
+        ))
+        assert row is not None and row.revoked_at is None
+        family_rows = list(session.scalars(select(RefreshToken).where(
+            RefreshToken.family_id == row.family_id
+        )))
+        assert len(family_rows) == 1
+
+
+def test_logout_family_revocation_rolls_back_on_commit_failure(
+    real_mysql_payroll, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine, seed = real_mysql_payroll
+    credential = _login_refresh(engine, seed)["refresh_token"]
+    from app.infrastructure.persistence.models.refresh_token import RefreshToken
+    from app.infrastructure.security.refresh_token import hash_refresh_token
+    from app.infrastructure.database.unit_of_work import SQLAlchemyUnitOfWork
+    from app.main import app
+
+    with Session(engine) as session:
+        row = session.scalar(select(RefreshToken).where(
+            RefreshToken.token_hash == hash_refresh_token(credential)
+        ))
+        assert row is not None
+        family_id = row.family_id
+
+    original_commit = SQLAlchemyUnitOfWork.commit
+
+    def fail_commit(uow):
+        raise RuntimeError("controlled logout commit failure")
+
+    monkeypatch.setattr(SQLAlchemyUnitOfWork, "commit", fail_commit)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post("/api/v1/auth/logout", json={"refresh_token": credential})
+    assert response.status_code == 500
+    monkeypatch.setattr(SQLAlchemyUnitOfWork, "commit", original_commit)
+
+    with Session(engine) as session:
+        family_rows = list(session.scalars(select(RefreshToken).where(
+            RefreshToken.family_id == family_id
+        )))
+        assert len(family_rows) == 1
+        assert family_rows[0].revoked_at is None

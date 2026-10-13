@@ -2,7 +2,7 @@
 
 Last documented milestone:
 
-Leave Management Phase 2 API implementation, automated verification, Swagger review, and authenticated live smoke test completed.
+Decision 46 refresh-token lifecycle implemented; isolated MySQL runtime validation is pending.
 
 ---
 
@@ -23,6 +23,20 @@ Implemented:
 - user repository
 - refresh-token infrastructure
 - centralized error handling
+
+Refresh-token lifecycle is implemented under Decision 46: successful login
+issues an opaque seven-day refresh credential (using configuration), only its
+SHA-256 hash is stored, `/auth/refresh` rotates it once, replay revokes only
+the affected login family, and `/auth/logout` revokes that family idempotently.
+Existing access JWTs are not denylisted and retain their normal expiry. No
+refresh-token audit event is emitted because no such event policy is approved.
+The authoritative schema and forward Alembic migration include the refresh
+token table; CI imports the schema snapshot without applying migrations.
+Validation: the full `tests/unit` suite passed (720); focused identity,
+security, schema-safety, and schema-preparation tests passed (84). The new
+authentication API tests stalled before test progress in the local Windows
+TestClient environment. Strict MySQL runtime validation remains pending; no
+live result is claimed.
 
 Security:
 

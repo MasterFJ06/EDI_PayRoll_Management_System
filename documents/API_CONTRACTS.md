@@ -36,9 +36,43 @@ Current application request/response schemas are defined in:
 
 ### POST /api/v1/auth/login
 
-Authenticates a user and returns an access JWT.
+Authenticates a user and returns the existing access JWT fields plus an opaque
+refresh token. The refresh token is returned only to the caller; the server
+persists only its SHA-256 hash. Each login creates a separate refresh session.
 
 Authentication uses the existing identity application service and security infrastructure.
+
+### POST /api/v1/auth/refresh
+
+Request body:
+
+- `refresh_token`: non-empty opaque refresh credential
+
+Success (`200 OK`) returns `access_token`, `refresh_token`, and `token_type`.
+The submitted token is consumed and replaced transactionally. Rotation retains
+the token family and uses the configured refresh lifetime. A consumed-token
+replay revokes that family. Invalid, expired, revoked, or replayed credentials
+all return the same HTTP 401 response:
+
+```json
+{"detail":"Invalid or expired refresh token."}
+```
+
+Malformed request bodies return HTTP 422. The refresh credential itself
+authenticates this operation; an access JWT is not required.
+
+### POST /api/v1/auth/logout
+
+Request body:
+
+- `refresh_token`: non-empty opaque refresh credential
+
+Success returns `204 No Content` and revokes every active refresh credential
+in the associated token family. Repeating logout for a known token is
+idempotent. Unknown credentials return the same generic HTTP 401 response used
+by refresh. Malformed request bodies return HTTP 422. Existing access JWTs
+remain valid until normal expiry; protected routes continue checking active
+users and current persisted RBAC.
 
 ---
 

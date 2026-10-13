@@ -56,6 +56,14 @@ _EXPECTED_LIVE_TESTS = {
     "test_concurrent_expired_attempt_recovery_has_one_winner",
     "test_recovery_and_audit_roll_back_together_on_audit_failure",
     "test_recovery_requires_persisted_permission",
+    "test_login_persists_only_hash_and_returns_configured_refresh_credential",
+    "test_refresh_rotation_replay_revokes_only_its_family",
+    "test_refresh_invalid_expired_and_revoked_credentials_share_401",
+    "test_concurrent_refresh_use_has_at_most_one_success",
+    "test_logout_is_idempotent_and_session_scoped",
+    "test_refresh_rejects_inactive_user_and_revokes_family",
+    "test_refresh_rotation_rolls_back_if_replacement_insert_fails",
+    "test_logout_family_revocation_rolls_back_on_commit_failure",
 }
 
 
@@ -83,7 +91,7 @@ def pytest_collection_finish(session: pytest.Session) -> None:
         missing = sorted(_EXPECTED_LIVE_TESTS - collected)
         unexpected = sorted(collected - _EXPECTED_LIVE_TESTS)
         raise pytest.UsageError(
-            f"Strict MySQL run must collect exactly thirty-nine live tests; missing={missing}, unexpected={unexpected}."
+            f"Strict MySQL run must collect exactly forty-seven live tests; missing={missing}, unexpected={unexpected}."
         )
 
 
@@ -93,7 +101,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     reporter = session.config.pluginmanager.get_plugin("terminalreporter")
     passed = len(reporter.stats.get("passed", [])) if reporter else 0
     skipped = len(reporter.stats.get("skipped", [])) if reporter else 0
-    if exitstatus != pytest.ExitCode.OK or passed != 39 or skipped != 0:
+    if exitstatus != pytest.ExitCode.OK or passed != 47 or skipped != 0:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
