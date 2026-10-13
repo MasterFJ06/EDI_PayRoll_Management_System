@@ -103,7 +103,7 @@ def test_compensation_write_permission_is_granted_only_to_payroll_administrator(
     assert "'compensation.write'" in payroll_assignment
 
     role_assignments = production_seed.split("INSERT IGNORE INTO role_permissions")[1:]
-    assert len(role_assignments) == 4
+    assert len(role_assignments) == 5
     hr_assignments = role_assignments[1:]
     assert all("compensation.write" not in assignment for assignment in hr_assignments)
 
@@ -113,6 +113,48 @@ def test_compensation_write_permission_is_granted_only_to_payroll_administrator(
     assert '"compensation.write"' in seed_body
     assert "seed.created_role_permission_ids" in fixture
     assert "created_permission_ids=tuple(" in seed_body
+
+
+def test_leave_write_permissions_are_hr_only_and_fixture_owned() -> None:
+    repository_root = Path(__file__).resolve().parents[4]
+    production_seed = (repository_root / "database/seed.sql").read_text(
+        encoding="utf-8"
+    )
+    fixture = (repository_root / "tests/integration/test_mysql_payroll_processing.py").read_text(
+        encoding="utf-8"
+    )
+    permission_codes = (
+        "workforce.leave.request.create_for_others",
+        "workforce.leave.balance.manage_for_others",
+    )
+    assert all(f"'{code}'" in production_seed for code in permission_codes)
+    grant = production_seed.rsplit(
+        "WHERE r.role_name = 'HR Administrator';", maxsplit=1
+    )[0].rsplit("INSERT IGNORE INTO role_permissions", maxsplit=1)[1]
+    assert all(code in grant for code in permission_codes)
+    payroll_grant = production_seed.split(
+        "WHERE r.role_name = 'Payroll Administrator';", maxsplit=1
+    )[0].rsplit("INSERT IGNORE INTO role_permissions", maxsplit=1)[1]
+    assert all(code not in payroll_grant for code in permission_codes)
+
+    seed_body = fixture.split("def _seed_leave_report_data", maxsplit=1)[1].split(
+        "def _cleanup_leave_report_data", maxsplit=1
+    )[0]
+    cleanup_body = fixture.split("def _cleanup_leave_report_data", maxsplit=1)[1].split(
+        "def _leave_report_headers", maxsplit=1
+    )[0]
+    assert all(f'"{code}"' in seed_body for code in permission_codes)
+    assert "created_permission_ids.append" in seed_body
+    assert "created_role_permission_keys.append" in seed_body
+    assert "with Session(engine) as session, session.begin():" in cleanup_body
+    assert "session.scalars(" in cleanup_body
+    assert "AuditEventChangeModel" in cleanup_body
+    assert cleanup_body.index("delete(AuditEventChangeModel)") < cleanup_body.index(
+        "delete(AuditEventModel)"
+    )
+    assert cleanup_body.index("delete(LeaveRequestDayModel)") < cleanup_body.index(
+        "delete(LeaveRequestModel)"
+    )
 
 
 class _ScalarResult:

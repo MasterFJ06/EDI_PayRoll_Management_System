@@ -6,6 +6,7 @@ from app.api.dependencies.current_user import get_current_user
 from app.api.dependencies.authorization import require_permission
 from app.api.dependencies.unit_of_work import get_unit_of_work
 from app.application.common.unit_of_work import UnitOfWork
+from app.application.identity.authorization_service import AuthorizationService
 from app.application.leave.leave_balance_service import LeaveBalanceService
 from app.application.leave.leave_request_service import LeaveRequestService
 from app.application.leave.leave_type_service import LeaveTypeService
@@ -22,6 +23,34 @@ from app.infrastructure.persistence.models.user import User
 
 
 router = APIRouter(prefix="", tags=["Leave Management"])
+
+
+def _authorize_employee_write(
+    uow: UnitOfWork,
+    current_user: User,
+    employee_id: int,
+    permission_code: str,
+) -> None:
+    """Allow a linked employee or a user with the persisted HR write permission."""
+    employee = uow.employees.get_by_id(employee_id)
+    if employee is None:
+        # Keep the application service's established missing-reference response.
+        return
+
+    linked_employee = uow.employees.get_by_user_id(current_user.user_id)
+    if (
+        linked_employee is not None
+        and linked_employee.employee_id == employee.employee_id
+    ):
+        return
+
+    if not AuthorizationService(uow).has_permission(
+        current_user.user_id, permission_code
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to access this resource.",
+        )
 
 
 @router.post("/leave-types", response_model=LeaveTypeResponse, status_code=201)
@@ -42,6 +71,12 @@ def create_leave_balance(
     current_user: Annotated[User, Depends(get_current_user)],
     uow: Annotated[UnitOfWork, Depends(get_unit_of_work)],
 ) -> LeaveBalanceResponse:
+    _authorize_employee_write(
+        uow,
+        current_user,
+        request.employee_id,
+        "workforce.leave.balance.manage_for_others",
+    )
     return LeaveBalanceService(uow).create(request)
 
 
@@ -52,6 +87,12 @@ def create_leave_request(
     uow: Annotated[UnitOfWork, Depends(get_unit_of_work)],
     http_request: Request,
 ) -> LeaveRequestResponse:
+    _authorize_employee_write(
+        uow,
+        current_user,
+        request.employee_id,
+        "workforce.leave.request.create_for_others",
+    )
     return LeaveRequestService(uow).create(
         request, current_user.user_id, getattr(http_request.state, "request_id", None)
     )

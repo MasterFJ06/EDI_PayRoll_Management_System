@@ -2462,6 +2462,7 @@ class SeededLeaveReport:
     created_role_ids: tuple[int, ...]
     created_permission_ids: tuple[int, ...]
     created_role_permission_keys: tuple[tuple[int, int], ...]
+    work_calendar_version_id: int
 
 
 @pytest.fixture
@@ -2523,6 +2524,8 @@ def _seed_leave_report_data(engine) -> SeededLeaveReport:
     from app.infrastructure.persistence.models.role_permission import RolePermission
     from app.infrastructure.persistence.models.user import User
     from app.infrastructure.persistence.models.user_role import UserRole
+    from app.infrastructure.persistence.models.work_calendar_version import WorkCalendarVersionModel
+    from app.infrastructure.persistence.models.work_calendar_weekly_rule import WorkCalendarWeeklyRuleModel
     from app.infrastructure.security.password import hash_password
 
     marker = uuid4().hex[:12]
@@ -2545,6 +2548,16 @@ def _seed_leave_report_data(engine) -> SeededLeaveReport:
         leave_permission, created_leave_permission = _get_or_create_permission(
             session, "report.leave.read", "View organization-wide Leave reports."
         )
+        leave_request_permission, created_leave_request_permission = _get_or_create_permission(
+            session,
+            "workforce.leave.request.create_for_others",
+            "Create Leave Requests for other employees.",
+        )
+        leave_balance_permission, created_leave_balance_permission = _get_or_create_permission(
+            session,
+            "workforce.leave.balance.manage_for_others",
+            "Create or adjust Leave Balances for other employees.",
+        )
         payroll_permissions = [
             _get_or_create_permission(
                 session, "payroll.run.read", "View payroll runs."
@@ -2555,13 +2568,21 @@ def _seed_leave_report_data(engine) -> SeededLeaveReport:
         ]
         if created_leave_permission:
             created_permission_ids.append(leave_permission.permission_id)
+        if created_leave_request_permission:
+            created_permission_ids.append(leave_request_permission.permission_id)
+        if created_leave_balance_permission:
+            created_permission_ids.append(leave_balance_permission.permission_id)
         created_permission_ids.extend(
             permission.permission_id
             for permission, created in payroll_permissions
             if created
         )
 
-        role_permission_pairs = [(hr_role.role_id, leave_permission.permission_id)] + [
+        role_permission_pairs = [
+            (hr_role.role_id, leave_permission.permission_id),
+            (hr_role.role_id, leave_request_permission.permission_id),
+            (hr_role.role_id, leave_balance_permission.permission_id),
+        ] + [
             (payroll_role.role_id, permission.permission_id)
             for permission, _created in payroll_permissions
         ]
@@ -2610,6 +2631,26 @@ def _seed_leave_report_data(engine) -> SeededLeaveReport:
         ]
         session.add_all([hr_user, payroll_user, department, designation, *leave_types])
         session.flush()
+        work_calendar = WorkCalendarVersionModel(
+            version_number=2_000_000 + int(marker[:5], 16),
+            effective_from=date(2000, 1, 1),
+            effective_to=date(2099, 12, 31),
+            time_zone="UTC",
+            created_by_user_id=hr_user.user_id,
+        )
+        session.add(work_calendar)
+        session.flush()
+        session.add_all(
+            [
+                WorkCalendarWeeklyRuleModel(
+                    work_calendar_version_id=work_calendar.work_calendar_version_id,
+                    iso_weekday=weekday,
+                    classification="WORKING_DAY" if weekday < 6 else "NON_WORKING_DAY",
+                    scheduled_minutes=480 if weekday < 6 else 0,
+                )
+                for weekday in range(1, 8)
+            ]
+        )
         terminated_employee = Employee(
             employee_code=f"LVR{marker}",
             user_id=None,
@@ -2623,7 +2664,7 @@ def _seed_leave_report_data(engine) -> SeededLeaveReport:
         )
         active_employee = Employee(
             employee_code=f"LVA{marker}",
-            user_id=None,
+            user_id=payroll_user.user_id,
             first_name="Active",
             last_name="ReportSubject",
             department_id=department.department_id,
@@ -2765,10 +2806,13 @@ def _seed_leave_report_data(engine) -> SeededLeaveReport:
             created_role_ids=tuple(created_role_ids),
             created_permission_ids=tuple(created_permission_ids),
             created_role_permission_keys=tuple(created_role_permission_keys),
+            work_calendar_version_id=work_calendar.work_calendar_version_id,
         )
 
 
 def _cleanup_leave_report_data(engine, leave_seed: SeededLeaveReport) -> None:
+    from app.infrastructure.persistence.models.audit_event import AuditEventModel
+    from app.infrastructure.persistence.models.audit_event_change import AuditEventChangeModel
     from app.infrastructure.persistence.models.department import Department
     from app.infrastructure.persistence.models.employee import Employee
     from app.infrastructure.persistence.models.designation import Designation
@@ -2781,10 +2825,52 @@ def _cleanup_leave_report_data(engine, leave_seed: SeededLeaveReport) -> None:
     from app.infrastructure.persistence.models.role import Role
     from app.infrastructure.persistence.models.user import User
     from app.infrastructure.persistence.models.user_role import UserRole
+    from app.infrastructure.persistence.models.work_calendar_version import WorkCalendarVersionModel
+    from app.infrastructure.persistence.models.work_calendar_weekly_rule import WorkCalendarWeeklyRuleModel
 
-    request_ids = tuple({request_id for _, request_id in leave_seed.allocation_request_pairs})
-    allocation_ids = tuple(allocation_id for allocation_id, _ in leave_seed.allocation_request_pairs)
     with Session(engine) as session, session.begin():
+        request_ids = tuple(
+            session.scalars(
+                select(LeaveRequestModel.leave_request_id).where(
+                    LeaveRequestModel.employee_id.in_(leave_seed.employee_ids)
+                )
+            ).all()
+        )
+        allocation_ids = tuple(
+            session.scalars(
+                select(LeaveRequestDayModel.leave_request_day_id).where(
+                    LeaveRequestDayModel.leave_request_id.in_(request_ids)
+                )
+            ).all()
+        ) if request_ids else ()
+        balance_ids = tuple(
+            session.scalars(
+                select(LeaveBalanceModel.leave_balance_id).where(
+                    LeaveBalanceModel.employee_id.in_(leave_seed.employee_ids)
+                )
+            ).all()
+        )
+        audit_ids = tuple(
+            session.scalars(
+                select(AuditEventModel.audit_event_id).where(
+                    AuditEventModel.actor_user_id.in_(leave_seed.user_ids),
+                    AuditEventModel.action_type == "LEAVE_REQUEST_CREATED",
+                    AuditEventModel.resource_type == "LEAVE_REQUEST",
+                    AuditEventModel.resource_id.in_(request_ids),
+                )
+            ).all()
+        ) if request_ids else ()
+        if audit_ids:
+            session.execute(
+                delete(AuditEventChangeModel).where(
+                    AuditEventChangeModel.audit_event_id.in_(audit_ids)
+                )
+            )
+            session.execute(
+                delete(AuditEventModel).where(
+                    AuditEventModel.audit_event_id.in_(audit_ids)
+                )
+            )
         if allocation_ids:
             session.execute(
                 delete(LeaveRequestDayModel).where(
@@ -2797,16 +2883,28 @@ def _cleanup_leave_report_data(engine, leave_seed: SeededLeaveReport) -> None:
                     LeaveRequestModel.leave_request_id.in_(request_ids)
                 )
             )
-        if leave_seed.balance_ids:
+        if balance_ids:
             session.execute(
                 delete(LeaveBalanceModel).where(
-                    LeaveBalanceModel.leave_balance_id.in_(leave_seed.balance_ids)
+                    LeaveBalanceModel.leave_balance_id.in_(balance_ids)
                 )
             )
         session.execute(delete(Employee).where(Employee.employee_id.in_(leave_seed.employee_ids)))
         session.execute(
             delete(LeaveTypeModel).where(
                 LeaveTypeModel.leave_type_id.in_(leave_seed.leave_type_ids)
+            )
+        )
+        session.execute(
+            delete(WorkCalendarWeeklyRuleModel).where(
+                WorkCalendarWeeklyRuleModel.work_calendar_version_id
+                == leave_seed.work_calendar_version_id
+            )
+        )
+        session.execute(
+            delete(WorkCalendarVersionModel).where(
+                WorkCalendarVersionModel.work_calendar_version_id
+                == leave_seed.work_calendar_version_id
             )
         )
         for role_id, permission_id in leave_seed.created_role_permission_keys:
@@ -2852,6 +2950,116 @@ def _leave_report_headers(user_id: int, username: str) -> dict[str, str]:
     from app.infrastructure.security.jwt import create_access_token
 
     return {"Authorization": f"Bearer {create_access_token(user_id, username)}"}
+
+
+def test_leave_writes_enforce_persisted_ownership_and_hr_permissions(
+    real_mysql_leave_report,
+) -> None:
+    engine, leave_seed = real_mysql_leave_report
+    from app.infrastructure.persistence.models.permission import Permission
+    from app.infrastructure.persistence.models.role_permission import RolePermission
+    from app.main import app
+
+    permission_codes = {
+        "workforce.leave.request.create_for_others",
+        "workforce.leave.balance.manage_for_others",
+    }
+    with Session(engine) as session:
+        permissions = session.scalars(
+            select(Permission).where(Permission.permission_code.in_(permission_codes))
+        ).all()
+        assert {permission.permission_code for permission in permissions} == permission_codes
+        for permission in permissions:
+            assert session.get(
+                RolePermission, (leave_seed.hr_role_id, permission.permission_id)
+            ) is not None
+            assert session.get(
+                RolePermission, (leave_seed.payroll_role_id, permission.permission_id)
+            ) is None
+
+    payroll_headers = _leave_report_headers(
+        leave_seed.payroll_user_id, leave_seed.payroll_username
+    )
+    hr_headers = _leave_report_headers(leave_seed.hr_user_id, leave_seed.hr_username)
+    other_employee_id = leave_seed.terminated_employee_id
+    request_payload = {
+        "employee_id": leave_seed.active_employee_id,
+        "leave_type_id": leave_seed.leave_type_ids[0],
+        "start_date": "2026-03-16",
+        "end_date": "2026-03-16",
+        "requested_days": "1.00",
+        "allocations": [{"leave_date": "2026-03-16", "day_fraction": "1.00"}],
+    }
+    other_request_payload = {**request_payload, "employee_id": other_employee_id}
+    balance_payload = {
+        "employee_id": leave_seed.active_employee_id,
+        "leave_type_id": leave_seed.leave_type_ids[0],
+        "balance_year": 2030,
+        "allocated_days": "10.00",
+        "used_days": "0.00",
+    }
+    other_balance_payload = {
+        **balance_payload,
+        "employee_id": other_employee_id,
+        "leave_type_id": leave_seed.leave_type_ids[1],
+    }
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        own_request = client.post(
+            "/api/v1/leave-requests", json=request_payload, headers=payroll_headers
+        )
+        assert own_request.status_code == 201, own_request.text
+        assert own_request.json()["employee_id"] == leave_seed.active_employee_id
+
+        payroll_cross_request = client.post(
+            "/api/v1/leave-requests",
+            json=other_request_payload,
+            headers=payroll_headers,
+        )
+        assert payroll_cross_request.status_code == 403, payroll_cross_request.text
+
+        missing_request = client.post(
+            "/api/v1/leave-requests",
+            json={**request_payload, "employee_id": 4_000_000_000},
+            headers=payroll_headers,
+        )
+        assert missing_request.status_code == 409, missing_request.text
+        assert "Employee does not exist" in missing_request.json()["detail"]
+
+        hr_cross_request = client.post(
+            "/api/v1/leave-requests", json=other_request_payload, headers=hr_headers
+        )
+        assert hr_cross_request.status_code == 201, hr_cross_request.text
+        assert hr_cross_request.json()["employee_id"] == other_employee_id
+
+        own_balance = client.post(
+            "/api/v1/leave-balances", json=balance_payload, headers=payroll_headers
+        )
+        assert own_balance.status_code == 201, own_balance.text
+        assert own_balance.json()["employee_id"] == leave_seed.active_employee_id
+
+        payroll_cross_balance = client.post(
+            "/api/v1/leave-balances",
+            json=other_balance_payload,
+            headers=payroll_headers,
+        )
+        assert payroll_cross_balance.status_code == 403, payroll_cross_balance.text
+
+        missing_balance = client.post(
+            "/api/v1/leave-balances",
+            json={**balance_payload, "employee_id": 4_000_000_000},
+            headers=payroll_headers,
+        )
+        assert missing_balance.status_code == 409, missing_balance.text
+        assert "Employee does not exist" in missing_balance.json()["detail"]
+
+        hr_cross_balance = client.post(
+            "/api/v1/leave-balances",
+            json=other_balance_payload,
+            headers=hr_headers,
+        )
+        assert hr_cross_balance.status_code == 201, hr_cross_balance.text
+        assert hr_cross_balance.json()["employee_id"] == other_employee_id
 
 
 def test_leave_reports_use_persisted_hr_permission_and_reject_payroll_role(

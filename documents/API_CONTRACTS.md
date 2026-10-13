@@ -206,6 +206,14 @@ Payroll/Workforce reference contract exists; no Payroll reference is inferred.
 
 Creates an employee leave balance for a leave type and year.
 
+The authenticated user may create a balance only for the employee record
+persistently linked through `employees.user_id`. Creating or adjusting a
+balance for another employee requires the persisted
+`workforce.leave.balance.manage_for_others` permission, assigned only to HR
+Administrator. No balance-adjustment endpoint currently exists. A target
+employee that does not exist retains the established HTTP 409 business-rule
+response.
+
 Request fields:
 
 - `employee_id` (positive integer)
@@ -218,6 +226,14 @@ Response fields: `leave_balance_id`, `employee_id`, `leave_type_id`, `balance_ye
 ## POST /api/v1/leave-requests
 
 Creates a leave request.
+
+An authenticated employee may submit only for the employee record persistently
+linked through `employees.user_id`. Creating a request for another employee
+requires the persisted `workforce.leave.request.create_for_others` permission,
+assigned only to HR Administrator. A target employee that does not exist
+retains the established HTTP 409 business-rule response. Unauthenticated
+requests return HTTP 401; authenticated users without the required
+cross-employee permission receive HTTP 403.
 
 Request fields:
 

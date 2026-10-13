@@ -83,6 +83,9 @@ jobs:
       - name: Run Leave reports API contract tests
         run: python -m pytest -q tests/api/test_leave_reports.py
 
+      - name: Run Leave authorization API tests
+        run: python -m pytest -q tests/api/test_leave.py
+
       - name: Prepare snapshot for the isolated test database
         shell: bash
         run: |
@@ -115,7 +118,7 @@ jobs:
           test "$target" = $'8\tepms_r7_runtime_test'
           echo "Verified MySQL target: $target"
 
-      - name: Run forty-seven strict payroll, workforce report, compensation, and identity MySQL integration tests (serial)
+      - name: Run forty-eight strict payroll, workforce report, compensation, and identity MySQL integration tests (serial)
         run: python -m pytest -q tests/integration/test_mysql_payroll_processing.py
 
       - name: Run focused offline MySQL safety tests

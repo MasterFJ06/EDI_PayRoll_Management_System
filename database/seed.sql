@@ -22,6 +22,8 @@ VALUES
     ('organization.calendar.read', 'View organization work calendar versions.'),
     ('organization.calendar.manage', 'Manage organization work calendar versions and overrides.'),
     ('workforce.leave_type.manage', 'Create and manage Leave Types.'),
+    ('workforce.leave.request.create_for_others', 'Create Leave Requests for other employees.'),
+    ('workforce.leave.balance.manage_for_others', 'Create or adjust Leave Balances for other employees.'),
     ('workforce.leave.approve', 'Approve Leave Requests.'),
     ('workforce.leave.reject', 'Reject Leave Requests.'),
     ('workforce.leave.cancel', 'Cancel Leave Requests.'),
@@ -64,4 +66,14 @@ SELECT r.role_id, p.permission_id
 FROM roles AS r
 JOIN permissions AS p
   ON p.permission_code = 'report.leave.read'
+WHERE r.role_name = 'HR Administrator';
+
+INSERT IGNORE INTO role_permissions (role_id, permission_id)
+SELECT r.role_id, p.permission_id
+FROM roles AS r
+JOIN permissions AS p
+  ON p.permission_code IN (
+      'workforce.leave.request.create_for_others',
+      'workforce.leave.balance.manage_for_others'
+  )
 WHERE r.role_name = 'HR Administrator';

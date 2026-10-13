@@ -38,6 +38,7 @@ _EXPECTED_LIVE_TESTS = {
     "test_employee_report_uses_seeded_hr_permission_and_filters_persisted_rows",
     "test_attendance_report_uses_hr_permission_filters_rows_and_paginates_same_date",
     "test_leave_reports_use_persisted_hr_permission_and_reject_payroll_role",
+    "test_leave_writes_enforce_persisted_ownership_and_hr_permissions",
     "test_leave_allocation_report_filters_paginates_and_preserves_allocations",
     "test_leave_balance_report_filters_paginates_and_returns_persisted_values",
     "test_leave_allocation_report_rejects_invalid_cursors_and_parameters",
@@ -91,7 +92,7 @@ def pytest_collection_finish(session: pytest.Session) -> None:
         missing = sorted(_EXPECTED_LIVE_TESTS - collected)
         unexpected = sorted(collected - _EXPECTED_LIVE_TESTS)
         raise pytest.UsageError(
-            f"Strict MySQL run must collect exactly forty-seven live tests; missing={missing}, unexpected={unexpected}."
+            f"Strict MySQL run must collect exactly forty-eight live tests; missing={missing}, unexpected={unexpected}."
         )
 
 
@@ -101,7 +102,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     reporter = session.config.pluginmanager.get_plugin("terminalreporter")
     passed = len(reporter.stats.get("passed", [])) if reporter else 0
     skipped = len(reporter.stats.get("skipped", [])) if reporter else 0
-    if exitstatus != pytest.ExitCode.OK or passed != 47 or skipped != 0:
+    if exitstatus != pytest.ExitCode.OK or passed != 48 or skipped != 0:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
