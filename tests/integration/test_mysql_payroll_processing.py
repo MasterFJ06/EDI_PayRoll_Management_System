@@ -1030,10 +1030,13 @@ def test_payroll_component_report_sanitizes_missing_definition_error(
         )
 
     assert response.status_code == 500
-    assert response.json()["error"]["message"] == "An unexpected error occurred."
-    assert "salary_component" not in response.text
-    assert "SELECT" not in response.text
-    assert str(seed.salary_component_id) not in response.text
+    assert response.json() == {
+        "error": {
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "An unexpected error occurred.",
+            "request_id": response.headers["X-Request-ID"],
+        }
+    }
 
 
 def test_employee_report_uses_seeded_hr_permission_and_filters_persisted_rows(
