@@ -7,6 +7,7 @@ VALUES ('HR Administrator', 'Administration of employee reporting.');
 
 INSERT IGNORE INTO permissions (permission_code, description)
 VALUES
+    ('compensation.write', 'Create compensation structures, components, revisions, and employee assignments.'),
     ('payroll.run.create', 'Create a payroll run.'),
     ('payroll.run.read', 'View payroll runs.'),
     ('payroll.run.process', 'Process a payroll run.'),
@@ -32,6 +33,7 @@ SELECT r.role_id, p.permission_id
 FROM roles AS r
 JOIN permissions AS p
   ON p.permission_code IN (
+      'compensation.write',
       'payroll.run.create',
       'payroll.run.read',
       'payroll.run.process',

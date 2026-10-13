@@ -257,7 +257,7 @@ Pydantic request validation failures return HTTP 422. Schema-backed domain rule 
 
 # Compensation / Salary Management
 
-All Compensation endpoints require an active user authenticated with a Bearer access token. Successful creation returns HTTP 201. Pydantic request validation failures return HTTP 422. Missing referenced records, duplicate values protected by application/database uniqueness, and schema-backed domain rule failures return HTTP 409 through the centralized error handler.
+All Compensation endpoints require an active user authenticated with a Bearer access token and the persisted `compensation.write` permission. This permission is assigned only to the `Payroll Administrator` role. Unauthenticated requests return HTTP 401; authenticated users without the permission receive HTTP 403 through the existing authorization dependency. Successful creation returns HTTP 201. Pydantic request validation failures return HTTP 422. Missing referenced records, duplicate values protected by application/database uniqueness, and schema-backed domain rule failures return HTTP 409 through the centralized error handler.
 
 ## POST /api/v1/salary-structures
 

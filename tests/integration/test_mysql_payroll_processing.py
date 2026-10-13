@@ -1628,6 +1628,11 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
         permission, created_permission = _get_or_create_permission(
             session, "payroll.run.process", "R6 test"
         )
+        compensation_permission, created_compensation_permission = (
+            _get_or_create_permission(
+                session, "compensation.write", "Create compensation data."
+            )
+        )
         recover_permission, created_recover_permission = _get_or_create_permission(
             session, "payroll.run.recover", "Expired attempt recovery"
         )
@@ -1680,6 +1685,7 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
         )
         created_role_permission_ids = []
         for item in (
+            compensation_permission,
             permission,
             recover_permission,
             retry_permission,
@@ -1807,6 +1813,7 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
             created_permission_ids=tuple(
                 item.permission_id
                 for item, created in (
+                    (compensation_permission, created_compensation_permission),
                     (permission, created_permission),
                     (recover_permission, created_recover_permission),
                     (retry_permission, created_retry_permission),

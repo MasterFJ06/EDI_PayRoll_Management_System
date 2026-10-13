@@ -780,9 +780,11 @@ The read-only contract for
 documented in Decision 44 and the API contract. It uses persisted Payroll
 Result Component amounts, requires the existing `report.payroll.read`
 permission for Payroll Administrator, and returns bounded filter-bound
-keyset pages. The API route and focused API tests are implemented; isolated
-MySQL runtime validation has not yet been performed. No runtime validation is
-claimed for this report.
+keyset pages. The API route, focused API tests, and isolated MySQL integration
+coverage are implemented. The latest reported GitHub Actions run passed all
+47 MySQL integration tests with zero skips, 720 unit tests, and 60 database
+safety/schema-preparation tests. No additional payroll-component-report
+runtime count was reported separately.
 
 ## Payroll Management — Expired Payroll Attempt Recovery (Decision 45)
 

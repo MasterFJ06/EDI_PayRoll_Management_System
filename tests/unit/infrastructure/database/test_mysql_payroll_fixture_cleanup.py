@@ -87,6 +87,34 @@ def test_recovery_permission_is_separate_and_seeded_for_payroll_administrator() 
     assert "seed.created_role_permission_ids" in fixture
 
 
+def test_compensation_write_permission_is_granted_only_to_payroll_administrator() -> None:
+    repository_root = Path(__file__).resolve().parents[4]
+    production_seed = (repository_root / "database/seed.sql").read_text(
+        encoding="utf-8"
+    )
+    fixture = (repository_root / "tests/integration/test_mysql_payroll_processing.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "('compensation.write'," in production_seed
+    payroll_assignment = production_seed.split(
+        "WHERE r.role_name = 'Payroll Administrator';", maxsplit=1
+    )[0].rsplit("INSERT IGNORE INTO role_permissions", maxsplit=1)[1]
+    assert "'compensation.write'" in payroll_assignment
+
+    role_assignments = production_seed.split("INSERT IGNORE INTO role_permissions")[1:]
+    assert len(role_assignments) == 4
+    hr_assignments = role_assignments[1:]
+    assert all("compensation.write" not in assignment for assignment in hr_assignments)
+
+    seed_body = fixture.split("def _seed_valid_payroll", maxsplit=1)[1].split(
+        "def _cleanup_seed", maxsplit=1
+    )[0]
+    assert '"compensation.write"' in seed_body
+    assert "seed.created_role_permission_ids" in fixture
+    assert "created_permission_ids=tuple(" in seed_body
+
+
 class _ScalarResult:
     def __init__(self, values: list[int]) -> None:
         self.values = values
