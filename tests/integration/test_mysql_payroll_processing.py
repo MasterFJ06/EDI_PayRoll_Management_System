@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from concurrent.futures import ThreadPoolExecutor
@@ -1002,6 +1002,9 @@ def test_payroll_component_report_sanitizes_missing_definition_error(
     from app.infrastructure.persistence.repositories.payroll_result_component_repository import (
         PayrollResultComponentRepository,
     )
+    from app.infrastructure.persistence.models.salary_component import (
+        SalaryComponentModel,
+    )
     from app.infrastructure.security.jwt import create_access_token
     from app.main import app
 
@@ -1031,13 +1034,24 @@ def test_payroll_component_report_sanitizes_missing_definition_error(
         )
 
     assert response.status_code == 500
-    assert response.json() == {
+    body = response.json()
+    error = body["error"]
+    request_id = error["request_id"]
+    UUID(request_id)
+    assert body == {
         "error": {
             "code": "INTERNAL_SERVER_ERROR",
             "message": "An unexpected error occurred.",
-            "request_id": response.headers["X-Request-ID"],
+            "request_id": request_id,
         }
     }
+    assert "SELECT" not in response.text
+    assert "salary_components" not in response.text
+    with Session(engine) as session:
+        component = session.get(SalaryComponentModel, seed.salary_component_id)
+        assert component is not None
+        assert component.component_code not in response.text
+        assert component.component_name not in response.text
 
 
 def test_employee_report_uses_seeded_hr_permission_and_filters_persisted_rows(
