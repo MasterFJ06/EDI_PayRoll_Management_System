@@ -230,6 +230,14 @@ Security architecture includes:
 - DTO validation
 - parameterized database access
 
+Refresh credentials are opaque random values; persistence contains only their
+SHA-256 hashes. Each login has an independent token family. Rotation consumes
+one token transactionally, and replay revokes that family without affecting
+other sessions for the same user. Logout revokes its family. Revocation does
+not invalidate access JWTs before normal expiry; active-user and persisted-RBAC
+checks continue on protected requests. Refresh lifecycle auditing is not
+currently required by an approved policy.
+
 ### Role-Based Authorization
 
 The persisted authorization chain is
@@ -260,9 +268,11 @@ Planned controls:
 
 Attempt-owned Payroll writes coordinate through the parent Payroll Run row lock
 and validate the current attempt. The approved attempt lease is 15 minutes and
-uses a database timestamp; lease renewal and crash recovery are later
-implementation work. Retry reconciliation and activation of a new attempt use
-one Unit of Work transaction.
+uses a database timestamp. The active attempt renews its lease at processing
+transaction boundaries. An operator may recover only an expired `PROCESSING`
+attempt to `FAILED`; recovery is audited atomically and does not start a retry.
+Retry reconciliation and activation of a new attempt use one Unit of Work
+transaction.
 
 ---
 

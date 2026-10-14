@@ -56,6 +56,21 @@ jobs:
       - name: Run payslip API contract tests
         run: python -m pytest -q tests/api/test_payslip_generation.py
 
+      - name: Run authentication API contract tests
+        run: python -m pytest -q tests/api/test_authentication.py
+
+      - name: Run identity application and security tests
+        run: >-
+          python -m pytest -q
+          tests/application/identity
+          tests/security
+
+      - name: Run Payroll attempt recovery API contract tests
+        run: python -m pytest -q tests/api/test_payroll_recovery.py
+
+      - name: Run Compensation API contract tests
+        run: python -m pytest -q tests/api/test_compensation.py
+
       - name: Run finalized payroll and component report API contract tests
         run: python -m pytest -q tests/api/test_payroll_report.py
 
@@ -67,6 +82,9 @@ jobs:
 
       - name: Run Leave reports API contract tests
         run: python -m pytest -q tests/api/test_leave_reports.py
+
+      - name: Run Leave authorization API tests
+        run: python -m pytest -q tests/api/test_leave.py
 
       - name: Prepare snapshot for the isolated test database
         shell: bash
@@ -100,7 +118,7 @@ jobs:
           test "$target" = $'8\tepms_r7_runtime_test'
           echo "Verified MySQL target: $target"
 
-      - name: Run twenty-eight strict payroll and workforce report MySQL integration tests (serial)
+      - name: Run forty-eight strict payroll, workforce report, compensation, and identity MySQL integration tests (serial)
         run: python -m pytest -q tests/integration/test_mysql_payroll_processing.py
 
       - name: Run focused offline MySQL safety tests

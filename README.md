@@ -30,3 +30,12 @@ The backend follows a layered DDD-oriented architecture:
 - Application
 - Infrastructure
 - API
+
+## Development and operations
+
+See [the development runbook](documents/DEVELOPMENT_RUNBOOK.md) for verified
+local setup, database initialization, seed-data, startup, health-check, and test
+instructions. In particular, read its database and demonstration-account
+warnings before initializing a database or testing privileged endpoints.
+The React/Vite frontend foundation is in `frontend/`; its local setup, API base
+URL, and authentication limitations are also documented in the runbook.

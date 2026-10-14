@@ -2,7 +2,7 @@
 
 Last documented milestone:
 
-Leave Management Phase 2 API implementation, automated verification, Swagger review, and authenticated live smoke test completed.
+Decision 46 refresh-token lifecycle implemented; isolated MySQL runtime validation is pending.
 
 ---
 
@@ -24,6 +24,20 @@ Implemented:
 - refresh-token infrastructure
 - centralized error handling
 
+Refresh-token lifecycle is implemented under Decision 46: successful login
+issues an opaque seven-day refresh credential (using configuration), only its
+SHA-256 hash is stored, `/auth/refresh` rotates it once, replay revokes only
+the affected login family, and `/auth/logout` revokes that family idempotently.
+Existing access JWTs are not denylisted and retain their normal expiry. No
+refresh-token audit event is emitted because no such event policy is approved.
+The authoritative schema and forward Alembic migration include the refresh
+token table; CI imports the schema snapshot without applying migrations.
+Validation: the full `tests/unit` suite passed (720); focused identity,
+security, schema-safety, and schema-preparation tests passed (84). The new
+authentication API tests stalled before test progress in the local Windows
+TestClient environment. Strict MySQL runtime validation remains pending; no
+live result is claimed.
+
 Security:
 
 - Argon2id password hashing
@@ -32,10 +46,17 @@ Security:
 - persisted user-role and role-permission checks; inactive roles grant no permissions
 - protected API endpoints
 
-The seed catalog defines the `Payroll Administrator` role and the granular payroll
-permissions. It does not assign any user to that role. Payroll authorization currently
-supports `payroll.run.create` and `payroll.run.read`; no Payroll API operations are
-implemented by this prerequisite.
+The idempotent seed catalog defines the Payroll Administrator and HR
+Administrator role-permission grants described in the API contract and
+`database/seed.sql`. The Payroll Administrator grants include Compensation
+creation, payroll run create/read/process/retry/recovery/finalization,
+payslip-record creation, and payroll reports. HR grants include employee,
+attendance, and Leave reports plus the seeded cross-employee Leave operations.
+The seed does not create a user or assign a user to either role; other catalog
+permissions are not automatically assigned to these roles. There is no role
+assignment API. `user_roles.assigned_by_user_id` is required, so privileged
+demonstration-account provisioning still needs a trusted, separately
+authorized bootstrap process; users must not self-assign a role.
 
 ---
 
@@ -766,6 +787,51 @@ The read-only contract for
 documented in Decision 44 and the API contract. It uses persisted Payroll
 Result Component amounts, requires the existing `report.payroll.read`
 permission for Payroll Administrator, and returns bounded filter-bound
-keyset pages. The API route and focused API tests are implemented; isolated
-MySQL runtime validation has not yet been performed. No runtime validation is
-claimed for this report.
+keyset pages. The API route, focused API tests, and isolated MySQL integration
+coverage are implemented. The latest reported GitHub Actions run passed all
+47 MySQL integration tests with zero skips, 720 unit tests, and 60 database
+safety/schema-preparation tests. No additional payroll-component-report
+runtime count was reported separately.
+
+## Payroll Management — Expired Payroll Attempt Recovery (Decision 45)
+
+Implemented the authenticated `POST /api/v1/payroll/runs/{run_id}/recover`
+operation with the dedicated `payroll.run.recover` permission assigned to
+Payroll Administrator. Recovery uses database time and a locked parent Payroll
+Run to transition only an expired `PROCESSING` attempt to `FAILED`, clearing
+the lease and atomically recording the recovery audit event. The attempt number
+is unchanged; the existing retry operation remains the only route to a new
+`PROCESSING` attempt. Lease renewal and existing artifact writers continue to
+fence expired or superseded attempts. No scheduler, schema change, or migration
+was added.
+
+Focused repository, API, existing Payroll, full unit, and database-safety
+validation results are to be recorded after execution. Strict ephemeral MySQL 8
+runtime validation is pending; no runtime result is claimed.
+
+## Developer and Operator Documentation
+
+Added `documents/DEVELOPMENT_RUNBOOK.md` and linked it from the README. The
+runbook documents verified local setup, current schema/seed and migration
+boundaries, application startup, health-check limitations, persisted RBAC, and
+test commands. It also records two unresolved setup limitations: the example
+database name differs from the fixed name in `database/schema.sql`, and the
+application has no role-assignment or first-administrator bootstrap flow.
+No runtime behavior or test result was changed by this documentation work.
+
+## Frontend Foundation
+
+Added a React/TypeScript/Vite frontend in `frontend/` with login, an
+authenticated application shell, a dashboard connected to the existing API
+health endpoint, and a centralized API client for login, refresh, logout, and
+authenticated requests. The Employee Management slice now provides a
+paginated directory using the persisted employee report, exact supported
+filters, employee detail by exact employee-code report filter, and employee
+creation through the existing API. There is no employee update endpoint, so
+editing is not offered. Department/designation lookup endpoints are also
+absent; the create form requires existing IDs rather than fabricated options.
+Access and refresh tokens remain in memory; the UI does not infer persisted
+roles or permissions from client-side data. Dashboard business metrics and
+activity remain unavailable because the API does not provide those endpoints.
+Frontend typecheck and production build pass locally. No backend runtime
+integration or browser login flow has been validated.

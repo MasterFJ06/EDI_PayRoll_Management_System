@@ -36,9 +36,43 @@ Current application request/response schemas are defined in:
 
 ### POST /api/v1/auth/login
 
-Authenticates a user and returns an access JWT.
+Authenticates a user and returns the existing access JWT fields plus an opaque
+refresh token. The refresh token is returned only to the caller; the server
+persists only its SHA-256 hash. Each login creates a separate refresh session.
 
 Authentication uses the existing identity application service and security infrastructure.
+
+### POST /api/v1/auth/refresh
+
+Request body:
+
+- `refresh_token`: non-empty opaque refresh credential
+
+Success (`200 OK`) returns `access_token`, `refresh_token`, and `token_type`.
+The submitted token is consumed and replaced transactionally. Rotation retains
+the token family and uses the configured refresh lifetime. A consumed-token
+replay revokes that family. Invalid, expired, revoked, or replayed credentials
+all return the same HTTP 401 response:
+
+```json
+{"detail":"Invalid or expired refresh token."}
+```
+
+Malformed request bodies return HTTP 422. The refresh credential itself
+authenticates this operation; an access JWT is not required.
+
+### POST /api/v1/auth/logout
+
+Request body:
+
+- `refresh_token`: non-empty opaque refresh credential
+
+Success returns `204 No Content` and revokes every active refresh credential
+in the associated token family. Repeating logout for a known token is
+idempotent. Unknown credentials return the same generic HTTP 401 response used
+by refresh. Malformed request bodies return HTTP 422. Existing access JWTs
+remain valid until normal expiry; protected routes continue checking active
+users and current persisted RBAC.
 
 ---
 
@@ -172,6 +206,14 @@ Payroll/Workforce reference contract exists; no Payroll reference is inferred.
 
 Creates an employee leave balance for a leave type and year.
 
+The authenticated user may create a balance only for the employee record
+persistently linked through `employees.user_id`. Creating or adjusting a
+balance for another employee requires the persisted
+`workforce.leave.balance.manage_for_others` permission, assigned only to HR
+Administrator. No balance-adjustment endpoint currently exists. A target
+employee that does not exist retains the established HTTP 409 business-rule
+response.
+
 Request fields:
 
 - `employee_id` (positive integer)
@@ -184,6 +226,14 @@ Response fields: `leave_balance_id`, `employee_id`, `leave_type_id`, `balance_ye
 ## POST /api/v1/leave-requests
 
 Creates a leave request.
+
+An authenticated employee may submit only for the employee record persistently
+linked through `employees.user_id`. Creating a request for another employee
+requires the persisted `workforce.leave.request.create_for_others` permission,
+assigned only to HR Administrator. A target employee that does not exist
+retains the established HTTP 409 business-rule response. Unauthenticated
+requests return HTTP 401; authenticated users without the required
+cross-employee permission receive HTTP 403.
 
 Request fields:
 
@@ -223,7 +273,7 @@ Pydantic request validation failures return HTTP 422. Schema-backed domain rule 
 
 # Compensation / Salary Management
 
-All Compensation endpoints require an active user authenticated with a Bearer access token. Successful creation returns HTTP 201. Pydantic request validation failures return HTTP 422. Missing referenced records, duplicate values protected by application/database uniqueness, and schema-backed domain rule failures return HTTP 409 through the centralized error handler.
+All Compensation endpoints require an active user authenticated with a Bearer access token and the persisted `compensation.write` permission. This permission is assigned only to the `Payroll Administrator` role. Unauthenticated requests return HTTP 401; authenticated users without the permission receive HTTP 403 through the existing authorization dependency. Successful creation returns HTTP 201. Pydantic request validation failures return HTTP 422. Missing referenced records, duplicate values protected by application/database uniqueness, and schema-backed domain rule failures return HTTP 409 through the centralized error handler.
 
 ## POST /api/v1/salary-structures
 
@@ -397,6 +447,35 @@ The expected attempt number used by the retry application service is resolved
 internally from the requested Payroll Run; it is not part of the public request
 or response contract. The transactional retry operation revalidates the attempt
 under the Payroll Run row lock.
+
+### Expired Payroll Attempt Recovery — Decision 45
+
+`POST /api/v1/payroll/runs/{run_id}/recover` accepts no request body and requires
+an active authenticated operator with the persisted `payroll.run.recover`
+permission, assigned to the existing Payroll Administrator role. The actor is
+derived from the authenticated user. Recovery succeeds only for a currently
+`PROCESSING` run whose non-null active-attempt lease has expired according to
+database time. It locks the parent Payroll Run and atomically changes the state
+to `FAILED`, clears the lease, and writes the
+`PAYROLL_RUN_ATTEMPT_RECOVERED` audit event. The event records the run ID,
+expired attempt number, actor, prior/new status, prior lease expiration,
+database-generated occurrence timestamp, and request correlation ID when
+available.
+
+Success returns HTTP 200 with the existing Payroll Run response and status
+`FAILED`; attempt number is unchanged. Missing runs return HTTP 404. A
+non-`PROCESSING` run, missing or unexpired lease, stale state, repeated request,
+or concurrent losing request returns HTTP 409. Unauthenticated and unauthorized
+requests return HTTP 401 and HTTP 403. Concurrent requests are serialized by
+the parent-row lock and conditional transition, so at most one succeeds.
+
+Recovery does not reconcile attempt artifacts, increment the attempt, restart,
+or finalize the run. The existing retry endpoint remains the only transition
+from `FAILED` to `PROCESSING` and performs the existing attempt reconciliation.
+Attempt-owned writers and lease renewal continue to validate the current
+processing attempt and its unexpired lease, fencing stale workers. The state
+transition and audit event share one Unit of Work transaction. No scheduler or
+background worker is introduced.
 
 ### Approved Payroll Run Finalization Contract
 
@@ -725,17 +804,29 @@ active roles grant access. Missing or invalid authentication returns HTTP 401. A
 authenticated user without the required permission returns HTTP 403. Clients cannot
 provide the user identity, role, or permission used for the decision.
 
-The development seed catalog includes the `Payroll Administrator` role and
-granular permissions `payroll.run.create`, `payroll.run.read`,
-`payroll.run.process`, `payroll.run.retry`, `payroll.run.finalize`,
-`payroll.payslip.create`, and `report.payroll.read`, plus the
-`HR Administrator` role with `report.employee.read` and
-`report.attendance.read`. The approved `report.leave.read` permission and HR
-role assignment are pending implementation. No user is assigned to either
-role by the seed data. Implemented Payroll Run operations are
-documented in the Phase 2A, Phase 2B-1, retry, and finalization sections above.
-Individual payslip record generation is implemented without document
-generation; payslip read/download operations remain unimplemented.
+The idempotent development seed catalog is defined in `database/seed.sql` and
+does not create users or assign users to roles. It grants the following
+permissions to the seeded `Payroll Administrator` role:
+`compensation.write`, `payroll.run.create`, `payroll.run.read`,
+`payroll.run.process`, `payroll.run.retry`, `payroll.run.recover`,
+`payroll.run.finalize`, `payroll.payslip.create`, and `report.payroll.read`.
+The seeded `HR Administrator` role receives `report.employee.read`,
+`report.attendance.read`, `report.leave.read`,
+`workforce.leave.request.create_for_others`, and
+`workforce.leave.balance.manage_for_others`. These role grants are separate;
+the seed does not grant payroll permissions to HR or HR-report permissions to
+Payroll Administrator. Other permissions present in the catalog are not
+assigned to either role by this seed. Existing extra persisted grants are not
+removed by applying the seed.
+
+Role assignment is not exposed as an API operation. The `user_roles` table
+requires an `assigned_by_user_id`; privileged demonstration-user provisioning
+therefore requires a trusted, separately authorized process and must not be
+simulated by self-assignment. See the development runbook for the supported
+ordinary-user setup and this limitation. Implemented Payroll Run operations
+are documented in the Phase 2A, Phase 2B-1, retry, recovery, and finalization
+sections above. Individual payslip record generation is implemented without
+document generation; payslip read/download operations remain unimplemented.
 
 ---
 

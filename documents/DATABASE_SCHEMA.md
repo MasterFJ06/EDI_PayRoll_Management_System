@@ -14,76 +14,82 @@ Do not add, remove, rename, or restructure tables based only on frontend require
 
 # Authoritative Tables
 
-The current EPMS schema contains exactly 33 authoritative tables.
+The current EPMS schema contains exactly 34 authoritative tables.
 
 ## 1. Identity & Access
 
 1. users
-2. roles
-3. permissions
-4. user_roles
-5. role_permissions
+2. refresh_tokens
+3. roles
+4. permissions
+5. user_roles
+6. role_permissions
 
 ---
 
 ## 2. Organization
 
-6. departments
-7. designations
+7. departments
+8. designations
 
 ---
 
 ## 3. Employee Management
 
-8. employees
-9. employment_history
+9. employees
+10. employment_history
 
 ---
 
 ## 4. Workforce Operations
 
-10. attendance_records
-11. leave_types
-12. leave_balances
-13. leave_requests
-14. leave_request_days
+11. attendance_records
+12. leave_types
+13. leave_balances
+14. leave_requests
+15. leave_request_days
 
 ---
 
 ## 5. Compensation / Payroll
 
-15. salary_structures
-16. salary_components
-17. salary_revisions
-18. salary_revision_components
-19. employee_salary_assignments
-20. payroll_runs
-21. payroll_run_workforce_snapshots
-22. payroll_results
-23. payroll_result_components
-24. payroll_processing_issues
-25. payslips
+16. salary_structures
+17. salary_components
+18. salary_revisions
+19. salary_revision_components
+20. employee_salary_assignments
+21. payroll_runs
+22. payroll_run_workforce_snapshots
+23. payroll_results
+24. payroll_result_components
+25. payroll_processing_issues
+26. payslips
 
 ---
 
 ## 6. Administration & Governance
 
-26. audit_events
-27. audit_event_changes
-28. security_events
+27. audit_events
+28. audit_event_changes
+29. security_events
 
 ---
 
 ## 7. System Configuration
 
-29. system_settings
+30. system_settings
 
 ## 8. Workforce Architecture Foundation
 
-30. work_calendar_versions
-31. work_calendar_weekly_rules
-32. work_calendar_date_overrides
-33. workforce_overtime_policy_versions
+31. work_calendar_versions
+32. work_calendar_weekly_rules
+33. work_calendar_date_overrides
+34. workforce_overtime_policy_versions
+
+`refresh_tokens` stores only SHA-256 token hashes, expiry/revocation timestamps,
+the owning user, and a session-family identifier used for rotation and scoped
+replay/logout revocation. Plaintext refresh credentials are returned only at
+issuance and are never persisted.
 
 ---
 
@@ -94,6 +100,12 @@ The current EPMS schema contains exactly 33 authoritative tables.
 `users`
 
 Primary identity record.
+
+`refresh_tokens.user_id`
+→ `users.user_id`
+
+Refresh-token rows persist only the SHA-256 digest and use `family_id` to scope
+rotation replay and logout revocation to one login session.
 
 ---
 

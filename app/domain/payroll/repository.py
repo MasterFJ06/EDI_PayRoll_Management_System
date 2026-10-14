@@ -40,6 +40,21 @@ class PayrollRunRepository(ABC):
     ) -> PayrollRun | None: ...
 
     @abstractmethod
+    def renew_active_attempt_lease(
+        self, payroll_run_id: int, attempt_number: int
+    ) -> bool: ...
+
+    @abstractmethod
+    def lock_expired_processing_attempt(
+        self, payroll_run_id: int
+    ) -> PayrollRun | None: ...
+
+    @abstractmethod
+    def recover_expired_attempt(
+        self, payroll_run_id: int, attempt_number: int
+    ) -> bool: ...
+
+    @abstractmethod
     def lock_failed_attempt(
         self, payroll_run_id: int
     ) -> PayrollRun | None: ...

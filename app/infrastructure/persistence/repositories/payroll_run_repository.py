@@ -105,6 +105,71 @@ class PayrollRunRepository(PayrollRunRepositoryContract):
         )
         return self.session.scalar(statement)
 
+    def renew_active_attempt_lease(
+        self, payroll_run_id: int, attempt_number: int
+    ) -> bool:
+        """Extend only a still-live lease for the current PROCESSING attempt."""
+        dialect_name = self.session.get_bind().dialect.name
+        lease_seconds = get_settings().payroll_attempt_lease_seconds
+        result = self.session.execute(
+            update(PayrollRunModel)
+            .where(
+                PayrollRunModel.payroll_run_id == payroll_run_id,
+                PayrollRunModel.status == "PROCESSING",
+                PayrollRunModel.attempt_number == attempt_number,
+                PayrollRunModel.attempt_lease_expires_at
+                > self._database_current_time(dialect_name),
+            )
+            .values(
+                attempt_lease_expires_at=self._lease_expiration(
+                    dialect_name, lease_seconds
+                )
+            )
+            .execution_options(synchronize_session="fetch")
+        )
+        return result.rowcount == 1
+
+    def lock_expired_processing_attempt(
+        self, payroll_run_id: int
+    ) -> PayrollRunModel | None:
+        """Lock an expired PROCESSING row using database time as authority."""
+        dialect_name = self.session.get_bind().dialect.name
+        return self.session.scalar(
+            select(PayrollRunModel)
+            .where(
+                PayrollRunModel.payroll_run_id == payroll_run_id,
+                PayrollRunModel.status == "PROCESSING",
+                PayrollRunModel.attempt_lease_expires_at.is_not(None),
+                PayrollRunModel.attempt_lease_expires_at
+                <= self._database_current_time(dialect_name),
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+    def recover_expired_attempt(
+        self, payroll_run_id: int, attempt_number: int
+    ) -> bool:
+        """Conditionally fail the same expired attempt while its row is locked."""
+        dialect_name = self.session.get_bind().dialect.name
+        result = self.session.execute(
+            update(PayrollRunModel)
+            .where(
+                PayrollRunModel.payroll_run_id == payroll_run_id,
+                PayrollRunModel.status == "PROCESSING",
+                PayrollRunModel.attempt_number == attempt_number,
+                PayrollRunModel.attempt_lease_expires_at.is_not(None),
+                PayrollRunModel.attempt_lease_expires_at
+                <= self._database_current_time(dialect_name),
+            )
+            .values(
+                status="FAILED",
+                attempt_lease_expires_at=None,
+            )
+            .execution_options(synchronize_session="fetch")
+        )
+        return result.rowcount == 1
+
     def lock_failed_attempt(self, payroll_run_id: int) -> PayrollRunModel | None:
         return self.session.scalar(
             select(PayrollRunModel)

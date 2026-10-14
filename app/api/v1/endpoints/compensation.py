@@ -2,7 +2,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
-from app.api.dependencies.current_user import get_current_user
+from app.api.dependencies.authorization import require_permission
 from app.api.dependencies.unit_of_work import get_unit_of_work
 from app.application.common.unit_of_work import UnitOfWork
 from app.application.compensation.employee_salary_assignment_service import (
@@ -39,7 +39,9 @@ router = APIRouter(prefix="", tags=["Compensation"])
 )
 def create_salary_structure(
     request: SalaryStructureCreateRequest,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[
+        User, Depends(require_permission("compensation.write"))
+    ],
     uow: Annotated[UnitOfWork, Depends(get_unit_of_work)],
 ) -> SalaryStructureResponse:
     return SalaryStructureService(uow).create(request)
@@ -52,7 +54,9 @@ def create_salary_structure(
 )
 def create_salary_component(
     request: SalaryComponentCreateRequest,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[
+        User, Depends(require_permission("compensation.write"))
+    ],
     uow: Annotated[UnitOfWork, Depends(get_unit_of_work)],
 ) -> SalaryComponentResponse:
     return SalaryComponentService(uow).create(request)
@@ -65,7 +69,9 @@ def create_salary_component(
 )
 def create_salary_revision(
     request: SalaryRevisionCreateRequest,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[
+        User, Depends(require_permission("compensation.write"))
+    ],
     uow: Annotated[UnitOfWork, Depends(get_unit_of_work)],
 ) -> SalaryRevisionResponse:
     return SalaryRevisionService(uow).create(request)
@@ -78,7 +84,9 @@ def create_salary_revision(
 )
 def create_salary_revision_component(
     request: SalaryRevisionComponentCreateRequest,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[
+        User, Depends(require_permission("compensation.write"))
+    ],
     uow: Annotated[UnitOfWork, Depends(get_unit_of_work)],
 ) -> SalaryRevisionComponentResponse:
     return SalaryRevisionComponentService(uow).create(request)
@@ -91,7 +99,9 @@ def create_salary_revision_component(
 )
 def create_employee_salary_assignment(
     request: EmployeeSalaryAssignmentCreateRequest,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[
+        User, Depends(require_permission("compensation.write"))
+    ],
     uow: Annotated[UnitOfWork, Depends(get_unit_of_work)],
 ) -> EmployeeSalaryAssignmentResponse:
     return EmployeeSalaryAssignmentService(uow).create(request)

@@ -13,7 +13,10 @@ from app.main import app
 class FakeEmployeeRepository:
     def get_by_id(self, employee_id):
         if employee_id in {5, 8}:
-            return SimpleNamespace(employee_id=employee_id)
+            return SimpleNamespace(
+                employee_id=employee_id,
+                user_id=1 if employee_id == 8 else None,
+            )
         return None
 
     def get_by_user_id(self, user_id):
@@ -156,8 +159,14 @@ class FakeUnitOfWork:
         self.leave_requests = FakeLeaveRequestRepository()
         self.work_calendars = FakeWorkCalendarRepository()
         self.permissions_allowed = True
+        self.permission_checks = []
+
+        def has_permission(user_id, permission_code):
+            self.permission_checks.append((user_id, permission_code))
+            return self.permissions_allowed
+
         self.authorization = SimpleNamespace(
-            has_permission=lambda *args: self.permissions_allowed
+            has_permission=has_permission
         )
         self.audit_events = SimpleNamespace(add=lambda *args: None)
         self.committed = False
@@ -206,7 +215,7 @@ def leave_type_payload(**overrides):
 
 def leave_balance_payload(**overrides):
     return {
-        "employee_id": 5,
+        "employee_id": 8,
         "leave_type_id": 1,
         "balance_year": 2026,
         "allocated_days": "20.00",
@@ -217,7 +226,7 @@ def leave_balance_payload(**overrides):
 
 def leave_request_payload(**overrides):
     return {
-        "employee_id": 5,
+        "employee_id": 8,
         "leave_type_id": 1,
         "start_date": "2026-10-10",
         "end_date": "2026-10-11",
@@ -318,6 +327,40 @@ def test_create_leave_balance(client, fake_uow):
     assert response.json()["leave_balance_id"] == 1
     assert response.json()["allocated_days"] == "20.00"
     assert fake_uow.committed is True
+    assert fake_uow.permission_checks == []
+
+
+def test_create_leave_balance_denies_other_employee_without_permission(client, fake_uow):
+    fake_uow.permissions_allowed = False
+    response = client.post(
+        "/api/v1/leave-balances",
+        json=leave_balance_payload(employee_id=5),
+        headers=authenticated_headers(),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == (
+        "You do not have permission to access this resource."
+    )
+    assert fake_uow.committed is False
+    assert fake_uow.permission_checks == [
+        (1, "workforce.leave.balance.manage_for_others")
+    ]
+
+
+def test_create_leave_balance_hr_permission_allows_other_employee(client, fake_uow):
+    seed_leave_type(fake_uow)
+    response = client.post(
+        "/api/v1/leave-balances",
+        json=leave_balance_payload(employee_id=5),
+        headers=authenticated_headers(),
+    )
+
+    assert response.status_code == 201
+    assert response.json()["employee_id"] == 5
+    assert fake_uow.permission_checks == [
+        (1, "workforce.leave.balance.manage_for_others")
+    ]
 
 
 @pytest.mark.parametrize(
@@ -381,6 +424,58 @@ def test_create_leave_request(client, fake_uow):
     assert response.json()["requested_days"] == "2.00"
     assert len(response.json()["allocations"]) == 2
     assert fake_uow.committed is True
+    assert fake_uow.permission_checks == []
+
+
+def test_create_leave_request_denies_other_employee_without_permission(client, fake_uow):
+    fake_uow.permissions_allowed = False
+    response = client.post(
+        "/api/v1/leave-requests",
+        json=leave_request_payload(employee_id=5),
+        headers=authenticated_headers(),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == (
+        "You do not have permission to access this resource."
+    )
+    assert fake_uow.committed is False
+    assert fake_uow.permission_checks == [
+        (1, "workforce.leave.request.create_for_others")
+    ]
+
+
+def test_create_leave_request_hr_permission_allows_other_employee(client, fake_uow):
+    seed_leave_type(fake_uow)
+    response = client.post(
+        "/api/v1/leave-requests",
+        json=leave_request_payload(employee_id=5),
+        headers=authenticated_headers(),
+    )
+
+    assert response.status_code == 201
+    assert response.json()["employee_id"] == 5
+    assert fake_uow.permission_checks == [
+        (1, "workforce.leave.request.create_for_others")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/v1/leave-requests", leave_request_payload(employee_id=999)),
+        ("/api/v1/leave-balances", leave_balance_payload(employee_id=999)),
+    ],
+)
+def test_leave_write_preserves_missing_employee_validation(
+    client, fake_uow, path, payload
+):
+    fake_uow.permissions_allowed = False
+    response = client.post(path, json=payload, headers=authenticated_headers())
+
+    assert response.status_code == 409
+    assert "Employee does not exist" in response.json()["detail"]
+    assert fake_uow.permission_checks == []
 
 
 def test_approve_leave_request(client, fake_uow):

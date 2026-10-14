@@ -237,6 +237,58 @@ def test_create_percentage_salary_revision_component_validates_base_component() 
     uow.commit.assert_called_once()
 
 
+def test_create_salary_revision_component_rejects_dependency_cycle() -> None:
+    uow = make_uow()
+    uow.salary_revision_components.get_by_revision.return_value = [
+        SimpleNamespace(
+            salary_component_id=3,
+            base_component_id=2,
+            is_overtime_base=False,
+        )
+    ]
+
+    with pytest.raises(BusinessRuleViolation, match="dependencies contain a cycle"):
+        SalaryRevisionComponentService(uow).create(
+            SalaryRevisionComponentCreateRequest(
+                salary_revision_id=3,
+                salary_component_id=2,
+                calculation_type="PERCENTAGE",
+                percentage_value=Decimal("10.0000"),
+                base_component_id=3,
+                is_overtime_base=False,
+            )
+        )
+
+    uow.salary_revision_components.add.assert_not_called()
+    uow.commit.assert_not_called()
+
+
+def test_create_salary_revision_component_accepts_acyclic_dependency_chain() -> None:
+    uow = make_uow()
+    uow.salary_revision_components.get_by_revision.return_value = [
+        SimpleNamespace(
+            salary_component_id=4,
+            base_component_id=5,
+            is_overtime_base=False,
+        )
+    ]
+
+    result = SalaryRevisionComponentService(uow).create(
+        SalaryRevisionComponentCreateRequest(
+            salary_revision_id=3,
+            salary_component_id=2,
+            calculation_type="PERCENTAGE",
+            percentage_value=Decimal("10.0000"),
+            base_component_id=4,
+            is_overtime_base=False,
+        )
+    )
+
+    assert result.salary_component_id == 2
+    uow.salary_revision_components.add.assert_called_once()
+    uow.commit.assert_called_once()
+
+
 @pytest.mark.parametrize(
     "failure",
     ["missing_revision", "missing_component", "missing_base", "duplicate", "invalid_shape"],

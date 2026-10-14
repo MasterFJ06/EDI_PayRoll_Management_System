@@ -38,6 +38,7 @@ _EXPECTED_LIVE_TESTS = {
     "test_employee_report_uses_seeded_hr_permission_and_filters_persisted_rows",
     "test_attendance_report_uses_hr_permission_filters_rows_and_paginates_same_date",
     "test_leave_reports_use_persisted_hr_permission_and_reject_payroll_role",
+    "test_leave_writes_enforce_persisted_ownership_and_hr_permissions",
     "test_leave_allocation_report_filters_paginates_and_preserves_allocations",
     "test_leave_balance_report_filters_paginates_and_returns_persisted_values",
     "test_leave_allocation_report_rejects_invalid_cursors_and_parameters",
@@ -45,6 +46,25 @@ _EXPECTED_LIVE_TESTS = {
     "test_payroll_component_report_reads_persisted_rows_filters_and_paginates",
     "test_payroll_component_report_uses_persisted_authorization_and_run_state",
     "test_payroll_component_report_sanitizes_missing_definition_error",
+    "test_compensation_salary_structure_create_persists",
+    "test_compensation_salary_component_create_persists",
+    "test_compensation_salary_revision_create_persists",
+    "test_compensation_salary_revision_component_create_persists_and_rejects_cycle",
+    "test_compensation_employee_salary_assignment_create_persists",
+    "test_compensation_schema_enforces_existing_unique_check_and_foreign_key_constraints",
+    "test_expired_attempt_recovery_audits_and_retry_starts_next_fenced_attempt",
+    "test_recovery_rejects_missing_wrong_state_and_unexpired_attempt",
+    "test_concurrent_expired_attempt_recovery_has_one_winner",
+    "test_recovery_and_audit_roll_back_together_on_audit_failure",
+    "test_recovery_requires_persisted_permission",
+    "test_login_persists_only_hash_and_returns_configured_refresh_credential",
+    "test_refresh_rotation_replay_revokes_only_its_family",
+    "test_refresh_invalid_expired_and_revoked_credentials_share_401",
+    "test_concurrent_refresh_use_has_at_most_one_success",
+    "test_logout_is_idempotent_and_session_scoped",
+    "test_refresh_rejects_inactive_user_and_revokes_family",
+    "test_refresh_rotation_rolls_back_if_replacement_insert_fails",
+    "test_logout_family_revocation_rolls_back_on_commit_failure",
 }
 
 
@@ -72,7 +92,7 @@ def pytest_collection_finish(session: pytest.Session) -> None:
         missing = sorted(_EXPECTED_LIVE_TESTS - collected)
         unexpected = sorted(collected - _EXPECTED_LIVE_TESTS)
         raise pytest.UsageError(
-            f"Strict MySQL run must collect exactly twenty-eight live tests; missing={missing}, unexpected={unexpected}."
+            f"Strict MySQL run must collect exactly forty-eight live tests; missing={missing}, unexpected={unexpected}."
         )
 
 
@@ -82,7 +102,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     reporter = session.config.pluginmanager.get_plugin("terminalreporter")
     passed = len(reporter.stats.get("passed", [])) if reporter else 0
     skipped = len(reporter.stats.get("skipped", [])) if reporter else 0
-    if exitstatus != pytest.ExitCode.OK or passed != 28 or skipped != 0:
+    if exitstatus != pytest.ExitCode.OK or passed != 48 or skipped != 0:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 

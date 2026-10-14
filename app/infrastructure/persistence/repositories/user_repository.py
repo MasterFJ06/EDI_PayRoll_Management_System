@@ -14,6 +14,15 @@ class UserRepository:
         statement = select(User).where(User.user_id == user_id)
         return self.session.scalar(statement)
 
+    def get_by_id_for_update(self, user_id: int) -> User | None:
+        statement = (
+            select(User)
+            .where(User.user_id == user_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return self.session.scalar(statement)
+
     def get_by_username(self, username: str) -> User | None:
         statement = select(User).where(User.username == username)
         return self.session.scalar(statement)

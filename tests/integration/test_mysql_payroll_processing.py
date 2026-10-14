@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from concurrent.futures import ThreadPoolExecutor
@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 class SeededPayroll:
     user_id: int
     username: str
+    password: str
     employee_id: int
     department_id: int
     designation_id: int
@@ -37,6 +38,7 @@ class SeededPayroll:
     attendance_report_permission_id: int
     created_hr_attendance_role_permission: bool
     permission_id: int
+    recover_permission_id: int
     finalize_permission_id: int
     payslip_permission_id: int
     report_permission_id: int
@@ -50,6 +52,8 @@ class SeededPayroll:
     payroll_run_id: int
     correlation_id: str
     extra_employee_ids: tuple[int, ...] = ()
+    extra_salary_structure_ids: tuple[int, ...] = ()
+    extra_salary_revision_ids: tuple[int, ...] = ()
     extra_salary_assignment_ids: tuple[int, ...] = ()
     extra_salary_component_ids: tuple[int, ...] = ()
     extra_payroll_run_ids: tuple[int, ...] = ()
@@ -77,7 +81,7 @@ def real_mysql_payroll(mysql_test_engine, monkeypatch: pytest.MonkeyPatch):
             jwt_secret_key=uuid4().hex,
             jwt_algorithm="HS256",
             access_token_expire_minutes=15,
-            refresh_token_expire_days=1,
+            refresh_token_expire_days=7,
             payroll_worker_count=1,
             payroll_attempt_lease_seconds=900,
         ),
@@ -998,6 +1002,9 @@ def test_payroll_component_report_sanitizes_missing_definition_error(
     from app.infrastructure.persistence.repositories.payroll_result_component_repository import (
         PayrollResultComponentRepository,
     )
+    from app.infrastructure.persistence.models.salary_component import (
+        SalaryComponentModel,
+    )
     from app.infrastructure.security.jwt import create_access_token
     from app.main import app
 
@@ -1027,10 +1034,24 @@ def test_payroll_component_report_sanitizes_missing_definition_error(
         )
 
     assert response.status_code == 500
-    assert response.json()["error"]["message"] == "An unexpected error occurred."
-    assert "salary_component" not in response.text
+    body = response.json()
+    error = body["error"]
+    request_id = error["request_id"]
+    UUID(request_id)
+    assert body == {
+        "error": {
+            "code": "INTERNAL_SERVER_ERROR",
+            "message": "An unexpected error occurred.",
+            "request_id": request_id,
+        }
+    }
     assert "SELECT" not in response.text
-    assert str(seed.salary_component_id) not in response.text
+    assert "salary_components" not in response.text
+    with Session(engine) as session:
+        component = session.get(SalaryComponentModel, seed.salary_component_id)
+        assert component is not None
+        assert component.component_code not in response.text
+        assert component.component_name not in response.text
 
 
 def test_employee_report_uses_seeded_hr_permission_and_filters_persisted_rows(
@@ -1607,6 +1628,17 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
         permission, created_permission = _get_or_create_permission(
             session, "payroll.run.process", "R6 test"
         )
+        compensation_permission, created_compensation_permission = (
+            _get_or_create_permission(
+                session, "compensation.write", "Create compensation data."
+            )
+        )
+        recover_permission, created_recover_permission = _get_or_create_permission(
+            session, "payroll.run.recover", "Expired attempt recovery"
+        )
+        retry_permission, created_retry_permission = _get_or_create_permission(
+            session, "payroll.run.retry", "Retry failed payroll attempt"
+        )
         finalize_permission, created_finalize_permission = _get_or_create_permission(
             session, "payroll.run.finalize", "R7 test"
         )
@@ -1653,7 +1685,10 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
         )
         created_role_permission_ids = []
         for item in (
+            compensation_permission,
             permission,
+            recover_permission,
+            retry_permission,
             finalize_permission,
             payslip_permission,
             report_permission,
@@ -1756,6 +1791,7 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
         return SeededPayroll(
             user_id=user.user_id,
             username=user.username,
+            password="R6-only synthetic credential",
             employee_id=employee.employee_id,
             department_id=department.department_id,
             designation_id=designation.designation_id,
@@ -1770,13 +1806,17 @@ def _seed_valid_payroll(engine) -> SeededPayroll:
             attendance_report_permission_id=attendance_report_permission.permission_id,
             created_hr_attendance_role_permission=created_hr_attendance_role_permission,
             permission_id=permission.permission_id,
+            recover_permission_id=recover_permission.permission_id,
             finalize_permission_id=finalize_permission.permission_id,
             payslip_permission_id=payslip_permission.permission_id,
             report_permission_id=report_permission.permission_id,
             created_permission_ids=tuple(
                 item.permission_id
                 for item, created in (
+                    (compensation_permission, created_compensation_permission),
                     (permission, created_permission),
+                    (recover_permission, created_recover_permission),
+                    (retry_permission, created_retry_permission),
                     (finalize_permission, created_finalize_permission),
                     (payslip_permission, created_payslip_permission),
                     (report_permission, created_report_permission),
@@ -1814,6 +1854,7 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
     from app.infrastructure.persistence.models.payroll_run_workforce_snapshot import PayrollRunWorkforceSnapshotModel
     from app.infrastructure.persistence.models.payslip import PayslipModel
     from app.infrastructure.persistence.models.permission import Permission
+    from app.infrastructure.persistence.models.refresh_token import RefreshToken
     from app.infrastructure.persistence.models.role import Role
     from app.infrastructure.persistence.models.role_permission import RolePermission
     from app.infrastructure.persistence.models.salary_component import SalaryComponentModel
@@ -1833,6 +1874,14 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
         seed.salary_assignment_id,
         *seed.extra_salary_assignment_ids,
     )
+    owned_salary_revision_ids = (
+        seed.salary_revision_id,
+        *seed.extra_salary_revision_ids,
+    )
+    owned_salary_structure_ids = (
+        seed.salary_structure_id,
+        *seed.extra_salary_structure_ids,
+    )
     with Session(engine) as session, session.begin():
         result_ids = select(PayrollResultModel.payroll_result_id).where(
             PayrollResultModel.payroll_run_id.in_(owned_run_ids)
@@ -1850,6 +1899,9 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
             owned_payslip_ids,
             seed.user_id,
         )
+        session.execute(
+            delete(RefreshToken).where(RefreshToken.user_id.in_(owned_user_ids))
+        )
         session.execute(delete(PayslipModel).where(
             PayslipModel.payslip_id.in_(owned_payslip_ids)
         ))
@@ -1859,9 +1911,25 @@ def _cleanup_seed(engine, seed: SeededPayroll) -> None:
         session.execute(delete(PayrollRunWorkforceSnapshotModel).where(PayrollRunWorkforceSnapshotModel.payroll_run_id.in_(owned_run_ids)))
         session.execute(delete(AttendanceRecord).where(AttendanceRecord.employee_id.in_(owned_employee_ids)))
         session.execute(delete(EmployeeSalaryAssignmentModel).where(EmployeeSalaryAssignmentModel.salary_assignment_id.in_(owned_assignment_ids)))
-        session.execute(delete(SalaryRevisionComponentModel).where(SalaryRevisionComponentModel.salary_revision_id == seed.salary_revision_id))
-        session.execute(delete(SalaryRevisionModel).where(SalaryRevisionModel.salary_revision_id == seed.salary_revision_id))
-        session.execute(delete(SalaryStructureModel).where(SalaryStructureModel.salary_structure_id == seed.salary_structure_id))
+        session.execute(
+            delete(SalaryRevisionComponentModel).where(
+                SalaryRevisionComponentModel.salary_revision_id.in_(
+                    owned_salary_revision_ids
+                )
+            )
+        )
+        session.execute(
+            delete(SalaryRevisionModel).where(
+                SalaryRevisionModel.salary_revision_id.in_(owned_salary_revision_ids)
+            )
+        )
+        session.execute(
+            delete(SalaryStructureModel).where(
+                SalaryStructureModel.salary_structure_id.in_(
+                    owned_salary_structure_ids
+                )
+            )
+        )
         session.execute(
             delete(SalaryComponentModel).where(
                 SalaryComponentModel.salary_component_id.in_(
@@ -1983,6 +2051,395 @@ def _get_or_create_permission(session: Session, code: str, description: str):
     return permission, True
 
 
+def test_compensation_salary_structure_create_persists(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+    from app.infrastructure.persistence.models.salary_structure import SalaryStructureModel
+
+    marker = uuid4().hex[:16]
+    payload = {
+        "structure_code": f"IT{marker}",
+        "structure_name": f"Integration Structure {marker}",
+        "description": "Disposable integration record",
+        "status": "ACTIVE",
+    }
+    token = create_access_token(seed.user_id, seed.username)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/api/v1/salary-structures",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 201, response.text
+    structure_id = response.json()["salary_structure_id"]
+    seed.extra_salary_structure_ids += (structure_id,)
+    with Session(engine) as session:
+        persisted = session.get(SalaryStructureModel, structure_id)
+        assert persisted is not None
+        assert persisted.structure_code == payload["structure_code"]
+        assert persisted.structure_name == payload["structure_name"]
+        assert persisted.description == payload["description"]
+        assert persisted.status == payload["status"]
+
+
+def test_compensation_salary_component_create_persists(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.salary_component import SalaryComponentModel
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    marker = uuid4().hex[:16]
+    payload = {
+        "component_code": f"IT{marker}",
+        "component_name": f"Integration Component {marker}",
+        "component_type": "DEDUCTION",
+        "status": "INACTIVE",
+    }
+    token = create_access_token(seed.user_id, seed.username)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/api/v1/salary-components",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 201, response.text
+    component_id = response.json()["salary_component_id"]
+    seed.extra_salary_component_ids += (component_id,)
+    with Session(engine) as session:
+        persisted = session.get(SalaryComponentModel, component_id)
+        assert persisted is not None
+        assert persisted.component_code == payload["component_code"]
+        assert persisted.component_name == payload["component_name"]
+        assert persisted.component_type == "DEDUCTION"
+        assert persisted.status == "INACTIVE"
+
+
+def test_compensation_salary_revision_create_persists(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.salary_revision import SalaryRevisionModel
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    payload = {
+        "salary_structure_id": seed.salary_structure_id,
+        "revision_number": 2,
+        "effective_from": "2100-01-01",
+        "effective_to": "2100-12-31",
+    }
+    token = create_access_token(seed.user_id, seed.username)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/api/v1/salary-revisions",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 201, response.text
+    revision_id = response.json()["salary_revision_id"]
+    seed.extra_salary_revision_ids += (revision_id,)
+    with Session(engine) as session:
+        persisted = session.get(SalaryRevisionModel, revision_id)
+        assert persisted is not None
+        assert persisted.salary_structure_id == seed.salary_structure_id
+        assert persisted.revision_number == 2
+        assert persisted.effective_from == date(2100, 1, 1)
+        assert persisted.effective_to == date(2100, 12, 31)
+
+
+def test_compensation_salary_revision_component_create_persists_and_rejects_cycle(
+    real_mysql_payroll,
+) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.salary_component import SalaryComponentModel
+    from app.infrastructure.persistence.models.salary_revision_component import (
+        SalaryRevisionComponentModel,
+    )
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    token = create_access_token(seed.user_id, seed.username)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        marker = uuid4().hex[:12]
+
+        def create_component(suffix: str) -> int:
+            response = client.post(
+                "/api/v1/salary-components",
+                json={
+                    "component_code": f"IT{marker}{suffix}",
+                    "component_name": f"Integration {suffix} {marker}",
+                    "component_type": "EARNING",
+                    "status": "ACTIVE",
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert response.status_code == 201, response.text
+            component_id = response.json()["salary_component_id"]
+            seed.extra_salary_component_ids += (component_id,)
+            return component_id
+
+        persisted_component_id = create_component("P")
+        fixed_payload = {
+            "salary_revision_id": seed.salary_revision_id,
+            "salary_component_id": persisted_component_id,
+            "calculation_type": "FIXED",
+            "fixed_amount": "1234.56",
+            "percentage_value": None,
+            "base_component_id": None,
+            "is_overtime_base": False,
+        }
+        response = client.post(
+            "/api/v1/salary-revision-components",
+            json=fixed_payload,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 201, response.text
+
+        cycle_a_id = create_component("A")
+        cycle_b_id = create_component("B")
+        cycle_a = client.post(
+            "/api/v1/salary-revision-components",
+            json={
+                "salary_revision_id": seed.salary_revision_id,
+                "salary_component_id": cycle_a_id,
+                "calculation_type": "PERCENTAGE",
+                "fixed_amount": None,
+                "percentage_value": "12.3456",
+                "base_component_id": cycle_b_id,
+                "is_overtime_base": False,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert cycle_a.status_code == 201, cycle_a.text
+        cycle_b = client.post(
+            "/api/v1/salary-revision-components",
+            json={
+                "salary_revision_id": seed.salary_revision_id,
+                "salary_component_id": cycle_b_id,
+                "calculation_type": "PERCENTAGE",
+                "fixed_amount": None,
+                "percentage_value": "1.2500",
+                "base_component_id": cycle_a_id,
+                "is_overtime_base": False,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert cycle_b.status_code == 409, cycle_b.text
+    assert cycle_b.json()["error"]["code"] == "BUSINESS_RULE_VIOLATION"
+    with Session(engine) as session:
+        fixed = session.get(
+            SalaryRevisionComponentModel,
+            (seed.salary_revision_id, persisted_component_id),
+        )
+        valid_percentage = session.get(
+            SalaryRevisionComponentModel,
+            (seed.salary_revision_id, cycle_a_id),
+        )
+        rejected_cycle = session.get(
+            SalaryRevisionComponentModel,
+            (seed.salary_revision_id, cycle_b_id),
+        )
+        assert fixed is not None
+        assert fixed.fixed_amount == Decimal("1234.56")
+        assert fixed.calculation_type == "FIXED"
+        assert valid_percentage is not None
+        assert valid_percentage.percentage_value == Decimal("12.3456")
+        assert rejected_cycle is None
+        # Component definitions are the valid parents for the persisted pivot rows.
+        assert session.get(SalaryComponentModel, cycle_a_id) is not None
+        assert session.get(SalaryComponentModel, cycle_b_id) is not None
+
+
+def test_compensation_employee_salary_assignment_create_persists(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.employee_salary_assignment import (
+        EmployeeSalaryAssignmentModel,
+    )
+    from app.infrastructure.persistence.models.salary_revision import SalaryRevisionModel
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    token = create_access_token(seed.user_id, seed.username)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        revision_response = client.post(
+            "/api/v1/salary-revisions",
+            json={
+                "salary_structure_id": seed.salary_structure_id,
+                "revision_number": 2,
+                "effective_from": "2100-01-01",
+                "effective_to": "2100-12-31",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert revision_response.status_code == 201, revision_response.text
+        revision_id = revision_response.json()["salary_revision_id"]
+        seed.extra_salary_revision_ids += (revision_id,)
+        payload = {
+            "employee_id": seed.employee_id,
+            "salary_revision_id": revision_id,
+            "effective_from": "2100-01-01",
+            "effective_to": "2100-12-31",
+        }
+        response = client.post(
+            "/api/v1/employee-salary-assignments",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 201, response.text
+    assignment_id = response.json()["salary_assignment_id"]
+    seed.extra_salary_assignment_ids += (assignment_id,)
+    with Session(engine) as session:
+        persisted = session.get(EmployeeSalaryAssignmentModel, assignment_id)
+        revision = session.get(SalaryRevisionModel, revision_id)
+        assert persisted is not None
+        assert revision is not None
+        assert persisted.employee_id == seed.employee_id
+        assert persisted.salary_revision_id == revision.salary_revision_id
+        assert persisted.effective_from == date(2100, 1, 1)
+        assert persisted.effective_to == date(2100, 12, 31)
+
+
+def test_compensation_schema_enforces_existing_unique_check_and_foreign_key_constraints(
+    real_mysql_payroll,
+) -> None:
+    from sqlalchemy.exc import DBAPIError
+
+    from app.infrastructure.persistence.models.employee_salary_assignment import (
+        EmployeeSalaryAssignmentModel,
+    )
+    from app.infrastructure.persistence.models.salary_component import SalaryComponentModel
+    from app.infrastructure.persistence.models.salary_revision import SalaryRevisionModel
+    from app.infrastructure.persistence.models.salary_revision_component import (
+        SalaryRevisionComponentModel,
+    )
+    from app.infrastructure.persistence.models.salary_structure import SalaryStructureModel
+
+    engine, seed = real_mysql_payroll
+    marker = uuid4().hex[:16]
+    with Session(engine) as session:
+        existing_structure = session.get(SalaryStructureModel, seed.salary_structure_id)
+        existing_component = session.get(SalaryComponentModel, seed.salary_component_id)
+        assert existing_structure is not None
+        assert existing_component is not None
+
+        def assert_rejected_by_mysql(record, expected_error_code: int) -> None:
+            with pytest.raises(DBAPIError) as error:
+                with session.begin_nested():
+                    session.add(record)
+                    session.flush()
+            assert error.value.orig.args[0] == expected_error_code
+
+        assert_rejected_by_mysql(
+            SalaryStructureModel(
+                structure_code=existing_structure.structure_code,
+                structure_name=f"Duplicate structure {marker}",
+                status="ACTIVE",
+            ),
+            1062,
+        )
+        assert_rejected_by_mysql(
+            SalaryComponentModel(
+                component_code=existing_component.component_code,
+                component_name=f"Duplicate component {marker}",
+                component_type="EARNING",
+                status="ACTIVE",
+            ),
+            1062,
+        )
+        assert_rejected_by_mysql(
+            SalaryRevisionModel(
+                salary_structure_id=seed.salary_structure_id,
+                revision_number=1,
+                effective_from=date(2000, 1, 1),
+                effective_to=date(2099, 12, 31),
+            ),
+            1062,
+        )
+        assert_rejected_by_mysql(
+            SalaryStructureModel(
+                structure_code=f"IT{marker}",
+                structure_name=f"Invalid status {marker}",
+                status="INVALID",
+            ),
+            3819,
+        )
+        assert_rejected_by_mysql(
+            SalaryComponentModel(
+                component_code=f"IT{marker}",
+                component_name=f"Invalid type {marker}",
+                component_type="INVALID",
+                status="ACTIVE",
+            ),
+            3819,
+        )
+        assert_rejected_by_mysql(
+            SalaryRevisionModel(
+                salary_structure_id=seed.salary_structure_id,
+                revision_number=2,
+                effective_from=date(2100, 1, 2),
+                effective_to=date(2100, 1, 1),
+            ),
+            3819,
+        )
+        assert_rejected_by_mysql(
+            EmployeeSalaryAssignmentModel(
+                employee_id=seed.employee_id,
+                salary_revision_id=seed.salary_revision_id,
+                effective_from=date(2100, 1, 2),
+                effective_to=date(2100, 1, 1),
+            ),
+            3819,
+        )
+        assert_rejected_by_mysql(
+            EmployeeSalaryAssignmentModel(
+                employee_id=9_223_372_036_854_770_000,
+                salary_revision_id=seed.salary_revision_id,
+                effective_from=date(2100, 1, 1),
+                effective_to=date(2100, 12, 31),
+            ),
+            1452,
+        )
+
+        component = SalaryComponentModel(
+            component_code=f"ITC{marker}",
+            component_name=f"Constraint component {marker}",
+            component_type="EARNING",
+            status="ACTIVE",
+        )
+        session.add(component)
+        session.flush()
+        seed.extra_salary_component_ids += (component.salary_component_id,)
+        assert_rejected_by_mysql(
+            SalaryRevisionComponentModel(
+                salary_revision_id=seed.salary_revision_id,
+                salary_component_id=seed.salary_component_id,
+                calculation_type="FIXED",
+                fixed_amount=Decimal("5000.00"),
+                percentage_value=None,
+                base_component_id=None,
+                is_overtime_base=True,
+            ),
+            1062,
+        )
+        assert_rejected_by_mysql(
+            SalaryRevisionComponentModel(
+                salary_revision_id=seed.salary_revision_id,
+                salary_component_id=component.salary_component_id,
+                calculation_type="FIXED",
+                fixed_amount=None,
+                percentage_value=None,
+                base_component_id=None,
+                is_overtime_base=False,
+            ),
+            3819,
+        )
+        session.rollback()
+
+
 @dataclass(frozen=True)
 class SeededLeaveReport:
     hr_user_id: int
@@ -2005,6 +2462,7 @@ class SeededLeaveReport:
     created_role_ids: tuple[int, ...]
     created_permission_ids: tuple[int, ...]
     created_role_permission_keys: tuple[tuple[int, int], ...]
+    work_calendar_version_id: int
 
 
 @pytest.fixture
@@ -2066,6 +2524,8 @@ def _seed_leave_report_data(engine) -> SeededLeaveReport:
     from app.infrastructure.persistence.models.role_permission import RolePermission
     from app.infrastructure.persistence.models.user import User
     from app.infrastructure.persistence.models.user_role import UserRole
+    from app.infrastructure.persistence.models.work_calendar_version import WorkCalendarVersionModel
+    from app.infrastructure.persistence.models.work_calendar_weekly_rule import WorkCalendarWeeklyRuleModel
     from app.infrastructure.security.password import hash_password
 
     marker = uuid4().hex[:12]
@@ -2088,6 +2548,16 @@ def _seed_leave_report_data(engine) -> SeededLeaveReport:
         leave_permission, created_leave_permission = _get_or_create_permission(
             session, "report.leave.read", "View organization-wide Leave reports."
         )
+        leave_request_permission, created_leave_request_permission = _get_or_create_permission(
+            session,
+            "workforce.leave.request.create_for_others",
+            "Create Leave Requests for other employees.",
+        )
+        leave_balance_permission, created_leave_balance_permission = _get_or_create_permission(
+            session,
+            "workforce.leave.balance.manage_for_others",
+            "Create or adjust Leave Balances for other employees.",
+        )
         payroll_permissions = [
             _get_or_create_permission(
                 session, "payroll.run.read", "View payroll runs."
@@ -2098,13 +2568,21 @@ def _seed_leave_report_data(engine) -> SeededLeaveReport:
         ]
         if created_leave_permission:
             created_permission_ids.append(leave_permission.permission_id)
+        if created_leave_request_permission:
+            created_permission_ids.append(leave_request_permission.permission_id)
+        if created_leave_balance_permission:
+            created_permission_ids.append(leave_balance_permission.permission_id)
         created_permission_ids.extend(
             permission.permission_id
             for permission, created in payroll_permissions
             if created
         )
 
-        role_permission_pairs = [(hr_role.role_id, leave_permission.permission_id)] + [
+        role_permission_pairs = [
+            (hr_role.role_id, leave_permission.permission_id),
+            (hr_role.role_id, leave_request_permission.permission_id),
+            (hr_role.role_id, leave_balance_permission.permission_id),
+        ] + [
             (payroll_role.role_id, permission.permission_id)
             for permission, _created in payroll_permissions
         ]
@@ -2153,6 +2631,26 @@ def _seed_leave_report_data(engine) -> SeededLeaveReport:
         ]
         session.add_all([hr_user, payroll_user, department, designation, *leave_types])
         session.flush()
+        work_calendar = WorkCalendarVersionModel(
+            version_number=2_000_000 + int(marker[:5], 16),
+            effective_from=date(2000, 1, 1),
+            effective_to=date(2099, 12, 31),
+            time_zone="UTC",
+            created_by_user_id=hr_user.user_id,
+        )
+        session.add(work_calendar)
+        session.flush()
+        session.add_all(
+            [
+                WorkCalendarWeeklyRuleModel(
+                    work_calendar_version_id=work_calendar.work_calendar_version_id,
+                    iso_weekday=weekday,
+                    classification="WORKING_DAY" if weekday < 6 else "NON_WORKING_DAY",
+                    scheduled_minutes=480 if weekday < 6 else 0,
+                )
+                for weekday in range(1, 8)
+            ]
+        )
         terminated_employee = Employee(
             employee_code=f"LVR{marker}",
             user_id=None,
@@ -2166,7 +2664,7 @@ def _seed_leave_report_data(engine) -> SeededLeaveReport:
         )
         active_employee = Employee(
             employee_code=f"LVA{marker}",
-            user_id=None,
+            user_id=payroll_user.user_id,
             first_name="Active",
             last_name="ReportSubject",
             department_id=department.department_id,
@@ -2308,10 +2806,13 @@ def _seed_leave_report_data(engine) -> SeededLeaveReport:
             created_role_ids=tuple(created_role_ids),
             created_permission_ids=tuple(created_permission_ids),
             created_role_permission_keys=tuple(created_role_permission_keys),
+            work_calendar_version_id=work_calendar.work_calendar_version_id,
         )
 
 
 def _cleanup_leave_report_data(engine, leave_seed: SeededLeaveReport) -> None:
+    from app.infrastructure.persistence.models.audit_event import AuditEventModel
+    from app.infrastructure.persistence.models.audit_event_change import AuditEventChangeModel
     from app.infrastructure.persistence.models.department import Department
     from app.infrastructure.persistence.models.employee import Employee
     from app.infrastructure.persistence.models.designation import Designation
@@ -2324,10 +2825,52 @@ def _cleanup_leave_report_data(engine, leave_seed: SeededLeaveReport) -> None:
     from app.infrastructure.persistence.models.role import Role
     from app.infrastructure.persistence.models.user import User
     from app.infrastructure.persistence.models.user_role import UserRole
+    from app.infrastructure.persistence.models.work_calendar_version import WorkCalendarVersionModel
+    from app.infrastructure.persistence.models.work_calendar_weekly_rule import WorkCalendarWeeklyRuleModel
 
-    request_ids = tuple({request_id for _, request_id in leave_seed.allocation_request_pairs})
-    allocation_ids = tuple(allocation_id for allocation_id, _ in leave_seed.allocation_request_pairs)
     with Session(engine) as session, session.begin():
+        request_ids = tuple(
+            session.scalars(
+                select(LeaveRequestModel.leave_request_id).where(
+                    LeaveRequestModel.employee_id.in_(leave_seed.employee_ids)
+                )
+            ).all()
+        )
+        allocation_ids = tuple(
+            session.scalars(
+                select(LeaveRequestDayModel.leave_request_day_id).where(
+                    LeaveRequestDayModel.leave_request_id.in_(request_ids)
+                )
+            ).all()
+        ) if request_ids else ()
+        balance_ids = tuple(
+            session.scalars(
+                select(LeaveBalanceModel.leave_balance_id).where(
+                    LeaveBalanceModel.employee_id.in_(leave_seed.employee_ids)
+                )
+            ).all()
+        )
+        audit_ids = tuple(
+            session.scalars(
+                select(AuditEventModel.audit_event_id).where(
+                    AuditEventModel.actor_user_id.in_(leave_seed.user_ids),
+                    AuditEventModel.action_type == "LEAVE_REQUEST_CREATED",
+                    AuditEventModel.resource_type == "LEAVE_REQUEST",
+                    AuditEventModel.resource_id.in_(request_ids),
+                )
+            ).all()
+        ) if request_ids else ()
+        if audit_ids:
+            session.execute(
+                delete(AuditEventChangeModel).where(
+                    AuditEventChangeModel.audit_event_id.in_(audit_ids)
+                )
+            )
+            session.execute(
+                delete(AuditEventModel).where(
+                    AuditEventModel.audit_event_id.in_(audit_ids)
+                )
+            )
         if allocation_ids:
             session.execute(
                 delete(LeaveRequestDayModel).where(
@@ -2340,16 +2883,28 @@ def _cleanup_leave_report_data(engine, leave_seed: SeededLeaveReport) -> None:
                     LeaveRequestModel.leave_request_id.in_(request_ids)
                 )
             )
-        if leave_seed.balance_ids:
+        if balance_ids:
             session.execute(
                 delete(LeaveBalanceModel).where(
-                    LeaveBalanceModel.leave_balance_id.in_(leave_seed.balance_ids)
+                    LeaveBalanceModel.leave_balance_id.in_(balance_ids)
                 )
             )
         session.execute(delete(Employee).where(Employee.employee_id.in_(leave_seed.employee_ids)))
         session.execute(
             delete(LeaveTypeModel).where(
                 LeaveTypeModel.leave_type_id.in_(leave_seed.leave_type_ids)
+            )
+        )
+        session.execute(
+            delete(WorkCalendarWeeklyRuleModel).where(
+                WorkCalendarWeeklyRuleModel.work_calendar_version_id
+                == leave_seed.work_calendar_version_id
+            )
+        )
+        session.execute(
+            delete(WorkCalendarVersionModel).where(
+                WorkCalendarVersionModel.work_calendar_version_id
+                == leave_seed.work_calendar_version_id
             )
         )
         for role_id, permission_id in leave_seed.created_role_permission_keys:
@@ -2395,6 +2950,116 @@ def _leave_report_headers(user_id: int, username: str) -> dict[str, str]:
     from app.infrastructure.security.jwt import create_access_token
 
     return {"Authorization": f"Bearer {create_access_token(user_id, username)}"}
+
+
+def test_leave_writes_enforce_persisted_ownership_and_hr_permissions(
+    real_mysql_leave_report,
+) -> None:
+    engine, leave_seed = real_mysql_leave_report
+    from app.infrastructure.persistence.models.permission import Permission
+    from app.infrastructure.persistence.models.role_permission import RolePermission
+    from app.main import app
+
+    permission_codes = {
+        "workforce.leave.request.create_for_others",
+        "workforce.leave.balance.manage_for_others",
+    }
+    with Session(engine) as session:
+        permissions = session.scalars(
+            select(Permission).where(Permission.permission_code.in_(permission_codes))
+        ).all()
+        assert {permission.permission_code for permission in permissions} == permission_codes
+        for permission in permissions:
+            assert session.get(
+                RolePermission, (leave_seed.hr_role_id, permission.permission_id)
+            ) is not None
+            assert session.get(
+                RolePermission, (leave_seed.payroll_role_id, permission.permission_id)
+            ) is None
+
+    payroll_headers = _leave_report_headers(
+        leave_seed.payroll_user_id, leave_seed.payroll_username
+    )
+    hr_headers = _leave_report_headers(leave_seed.hr_user_id, leave_seed.hr_username)
+    other_employee_id = leave_seed.terminated_employee_id
+    request_payload = {
+        "employee_id": leave_seed.active_employee_id,
+        "leave_type_id": leave_seed.leave_type_ids[0],
+        "start_date": "2026-03-16",
+        "end_date": "2026-03-16",
+        "requested_days": "1.00",
+        "allocations": [{"leave_date": "2026-03-16", "day_fraction": "1.00"}],
+    }
+    other_request_payload = {**request_payload, "employee_id": other_employee_id}
+    balance_payload = {
+        "employee_id": leave_seed.active_employee_id,
+        "leave_type_id": leave_seed.leave_type_ids[0],
+        "balance_year": 2030,
+        "allocated_days": "10.00",
+        "used_days": "0.00",
+    }
+    other_balance_payload = {
+        **balance_payload,
+        "employee_id": other_employee_id,
+        "leave_type_id": leave_seed.leave_type_ids[1],
+    }
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        own_request = client.post(
+            "/api/v1/leave-requests", json=request_payload, headers=payroll_headers
+        )
+        assert own_request.status_code == 201, own_request.text
+        assert own_request.json()["employee_id"] == leave_seed.active_employee_id
+
+        payroll_cross_request = client.post(
+            "/api/v1/leave-requests",
+            json=other_request_payload,
+            headers=payroll_headers,
+        )
+        assert payroll_cross_request.status_code == 403, payroll_cross_request.text
+
+        missing_request = client.post(
+            "/api/v1/leave-requests",
+            json={**request_payload, "employee_id": 4_000_000_000},
+            headers=payroll_headers,
+        )
+        assert missing_request.status_code == 409, missing_request.text
+        assert "Employee does not exist" in missing_request.json()["detail"]
+
+        hr_cross_request = client.post(
+            "/api/v1/leave-requests", json=other_request_payload, headers=hr_headers
+        )
+        assert hr_cross_request.status_code == 201, hr_cross_request.text
+        assert hr_cross_request.json()["employee_id"] == other_employee_id
+
+        own_balance = client.post(
+            "/api/v1/leave-balances", json=balance_payload, headers=payroll_headers
+        )
+        assert own_balance.status_code == 201, own_balance.text
+        assert own_balance.json()["employee_id"] == leave_seed.active_employee_id
+
+        payroll_cross_balance = client.post(
+            "/api/v1/leave-balances",
+            json=other_balance_payload,
+            headers=payroll_headers,
+        )
+        assert payroll_cross_balance.status_code == 403, payroll_cross_balance.text
+
+        missing_balance = client.post(
+            "/api/v1/leave-balances",
+            json={**balance_payload, "employee_id": 4_000_000_000},
+            headers=payroll_headers,
+        )
+        assert missing_balance.status_code == 409, missing_balance.text
+        assert "Employee does not exist" in missing_balance.json()["detail"]
+
+        hr_cross_balance = client.post(
+            "/api/v1/leave-balances",
+            json=other_balance_payload,
+            headers=hr_headers,
+        )
+        assert hr_cross_balance.status_code == 201, hr_cross_balance.text
+        assert hr_cross_balance.json()["employee_id"] == other_employee_id
 
 
 def test_leave_reports_use_persisted_hr_permission_and_reject_payroll_role(
@@ -2671,3 +3336,412 @@ def test_leave_balance_report_rejects_invalid_cursors_and_parameters(
             assert response.status_code == 422, (path, params, response.text)
             assert cursor not in response.text
             assert "signature" not in response.text.lower()
+
+
+def _recover_request(seed: SeededPayroll, *, user_id: int | None = None, username: str | None = None):
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    token = create_access_token(
+        user_id if user_id is not None else seed.user_id,
+        username if username is not None else seed.username,
+    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        return client.post(
+            f"/api/v1/payroll/runs/{seed.payroll_run_id}/recover",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+
+def _expire_attempt_for_recovery(engine, seed: SeededPayroll, attempt_number: int = 2) -> None:
+    from app.infrastructure.persistence.models.payroll_run import PayrollRunModel
+
+    with Session(engine) as session:
+        run = session.get(PayrollRunModel, seed.payroll_run_id)
+        assert run is not None
+        run.status = "PROCESSING"
+        run.attempt_number = attempt_number
+        run.attempt_lease_expires_at = datetime(2000, 1, 1)
+        session.commit()
+
+
+def test_expired_attempt_recovery_audits_and_retry_starts_next_fenced_attempt(
+    real_mysql_payroll,
+) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.audit_event import AuditEventModel
+    from app.infrastructure.persistence.models.audit_event_change import AuditEventChangeModel
+    from app.infrastructure.persistence.models.payroll_run import PayrollRunModel
+    from app.infrastructure.persistence.repositories.payroll_run_repository import PayrollRunRepository
+
+    _expire_attempt_for_recovery(engine, seed)
+    response = _recover_request(seed)
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "FAILED"
+    with Session(engine) as session:
+        run = session.get(PayrollRunModel, seed.payroll_run_id)
+        event = session.scalar(
+            select(AuditEventModel).where(
+                AuditEventModel.action_type == "PAYROLL_RUN_ATTEMPT_RECOVERED",
+                AuditEventModel.resource_id == seed.payroll_run_id,
+            )
+        )
+        assert run is not None
+        assert run.status == "FAILED" and run.attempt_number == 2
+        assert run.attempt_lease_expires_at is None
+        assert event is not None and event.actor_user_id == seed.user_id
+        assert event.correlation_id == response.headers["X-Request-ID"]
+        assert event.occurred_at is not None
+        changes = session.scalars(
+            select(AuditEventChangeModel).where(
+                AuditEventChangeModel.audit_event_id == event.audit_event_id
+            )
+        ).all()
+        assert {change.field_name: (change.old_value, change.new_value) for change in changes} == {
+            "payroll_run_id": (None, str(seed.payroll_run_id)),
+            "attempt_number": (None, "2"),
+            "status": ("PROCESSING", "FAILED"),
+            "attempt_lease_expires_at": ("2000-01-01T00:00:00", None),
+        }
+    from app.infrastructure.security.jwt import create_access_token
+    from app.main import app
+
+    token = create_access_token(seed.user_id, seed.username)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        retry = client.post(
+            f"/api/v1/payroll/runs/{seed.payroll_run_id}/retry",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["status"] == "PROCESSING"
+    with Session(engine) as session:
+        run = session.get(PayrollRunModel, seed.payroll_run_id)
+        assert run is not None and run.attempt_number == 3
+        assert PayrollRunRepository(session).lock_active_attempt(seed.payroll_run_id, 2) is None
+
+
+def test_recovery_rejects_missing_wrong_state_and_unexpired_attempt(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.payroll_run import PayrollRunModel
+
+    missing = SeededPayroll(**{**vars(seed), "payroll_run_id": seed.payroll_run_id + 999999})
+    assert _recover_request(missing).status_code == 404
+    assert _recover_request(seed).status_code == 409
+    with Session(engine) as session:
+        run = session.get(PayrollRunModel, seed.payroll_run_id)
+        assert run is not None
+        run.status = "PROCESSING"
+        run.attempt_number = 1
+        run.attempt_lease_expires_at = datetime(2999, 1, 1)
+        session.commit()
+    response = _recover_request(seed)
+    assert response.status_code == 409
+    with Session(engine) as session:
+        run = session.get(PayrollRunModel, seed.payroll_run_id)
+        assert run is not None
+        assert run.status == "PROCESSING" and run.attempt_number == 1
+        assert run.attempt_lease_expires_at == datetime(2999, 1, 1)
+
+
+def test_concurrent_expired_attempt_recovery_has_one_winner(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.audit_event import AuditEventModel
+
+    _expire_attempt_for_recovery(engine, seed)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(lambda _index: _recover_request(seed), range(2)))
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    with Session(engine) as session:
+        assert session.scalar(
+            select(func.count(AuditEventModel.audit_event_id)).where(
+                AuditEventModel.action_type == "PAYROLL_RUN_ATTEMPT_RECOVERED",
+                AuditEventModel.resource_id == seed.payroll_run_id,
+            )
+        ) == 1
+
+
+def test_recovery_and_audit_roll_back_together_on_audit_failure(
+    real_mysql_payroll, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.audit_event import AuditEventModel
+    from app.infrastructure.persistence.models.payroll_run import PayrollRunModel
+    from app.infrastructure.persistence.repositories.audit_event_repository import AuditEventRepository
+
+    _expire_attempt_for_recovery(engine, seed)
+    original_add = AuditEventRepository.add
+
+    def fail_recovery_audit(repository, event, changes=()):
+        if event.action_type == "PAYROLL_RUN_ATTEMPT_RECOVERED":
+            raise RuntimeError("controlled recovery audit failure")
+        return original_add(repository, event, changes)
+
+    monkeypatch.setattr(AuditEventRepository, "add", fail_recovery_audit)
+    response = _recover_request(seed)
+    assert response.status_code == 500
+    with Session(engine) as session:
+        run = session.get(PayrollRunModel, seed.payroll_run_id)
+        audit = session.scalar(
+            select(AuditEventModel).where(
+                AuditEventModel.action_type == "PAYROLL_RUN_ATTEMPT_RECOVERED",
+                AuditEventModel.resource_id == seed.payroll_run_id,
+            )
+        )
+        assert run is not None
+        assert run.status == "PROCESSING" and run.attempt_number == 2
+        assert run.attempt_lease_expires_at is not None
+        assert audit is None
+
+
+def test_recovery_requires_persisted_permission(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.role import Role
+    from app.infrastructure.persistence.models.user import User
+    from app.infrastructure.persistence.models.user_role import UserRole
+    from app.infrastructure.security.password import hash_password
+
+    _expire_attempt_for_recovery(engine, seed)
+    username = f"r6_no_recover_{uuid4().hex[:12]}"
+    with Session(engine) as session:
+        hr_role = session.scalar(select(Role).where(Role.role_name == "HR Administrator"))
+        assert hr_role is not None
+        user = User(
+            username=username,
+            email=f"{username}@example.invalid",
+            password_hash=hash_password("synthetic integration-only password"),
+            status="ACTIVE",
+        )
+        session.add(user)
+        session.flush()
+        session.add(UserRole(user_id=user.user_id, role_id=hr_role.role_id, assigned_by_user_id=seed.user_id))
+        session.commit()
+        user_id = user.user_id
+        seed.extra_users += ((user_id, username),)
+
+    response = _recover_request(seed, user_id=user_id, username=username)
+    assert response.status_code == 403
+
+
+def _login_refresh(engine, seed) -> dict[str, str]:
+    from app.main import app
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/api/v1/auth/login",
+            json={"username": seed.username, "password": seed.password},
+        )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _post_refresh(token: str):
+    from app.main import app
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        return client.post("/api/v1/auth/refresh", json={"refresh_token": token})
+
+
+def test_login_persists_only_hash_and_returns_configured_refresh_credential(
+    real_mysql_payroll,
+) -> None:
+    engine, seed = real_mysql_payroll
+    from app.core.config import get_settings
+    from app.infrastructure.persistence.models.refresh_token import RefreshToken
+    from app.infrastructure.security.refresh_token import hash_refresh_token
+
+    response = _login_refresh(engine, seed)
+    with Session(engine) as session:
+        row = session.scalar(
+            select(RefreshToken).where(RefreshToken.user_id == seed.user_id)
+        )
+        assert row is not None
+        assert row.token_hash == hash_refresh_token(response["refresh_token"])
+        assert response["refresh_token"] not in row.token_hash
+        lifetime = row.expires_at - row.created_at
+        configured_lifetime = timedelta(days=get_settings().refresh_token_expire_days)
+        assert configured_lifetime - timedelta(seconds=1) <= lifetime <= configured_lifetime
+        assert row.family_id
+    assert set(response) == {"access_token", "refresh_token", "token_type"}
+
+
+def test_refresh_rotation_replay_revokes_only_its_family(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.refresh_token import RefreshToken
+    from app.infrastructure.security.refresh_token import hash_refresh_token
+
+    first_login = _login_refresh(engine, seed)
+    other_login = _login_refresh(engine, seed)
+    with Session(engine) as session:
+        first_row = session.scalar(select(RefreshToken).where(
+            RefreshToken.token_hash == hash_refresh_token(first_login["refresh_token"])
+        ))
+        other_row = session.scalar(select(RefreshToken).where(
+            RefreshToken.token_hash == hash_refresh_token(other_login["refresh_token"])
+        ))
+        assert first_row is not None and other_row is not None
+        first_family, other_family = first_row.family_id, other_row.family_id
+    rotated = _post_refresh(first_login["refresh_token"])
+    assert rotated.status_code == 200, rotated.text
+    replay = _post_refresh(first_login["refresh_token"])
+    assert replay.status_code == 401
+    assert replay.json() == {"detail": "Invalid or expired refresh token."}
+    other_session_rotation = _post_refresh(other_login["refresh_token"])
+    assert other_session_rotation.status_code == 200, other_session_rotation.text
+
+    with Session(engine) as session:
+        rows = list(session.scalars(select(RefreshToken).where(RefreshToken.user_id == seed.user_id)))
+        first_family_rows = [row for row in rows if row.family_id == first_family]
+        other_family_rows = [row for row in rows if row.family_id == other_family]
+        assert len(first_family_rows) == 2
+        assert all(row.revoked_at is not None for row in first_family_rows)
+        assert len(other_family_rows) == 2
+        assert sum(row.revoked_at is None for row in other_family_rows) == 1
+
+
+def test_refresh_invalid_expired_and_revoked_credentials_share_401(
+    real_mysql_payroll,
+) -> None:
+    engine, seed = real_mysql_payroll
+    from app.infrastructure.persistence.models.refresh_token import RefreshToken
+    from app.infrastructure.security.refresh_token import hash_refresh_token
+
+    expired_login = _login_refresh(engine, seed)
+    revoked_login = _login_refresh(engine, seed)
+    with Session(engine) as session:
+        expired = session.scalar(select(RefreshToken).where(
+            RefreshToken.token_hash == hash_refresh_token(expired_login["refresh_token"])
+        ))
+        assert expired is not None
+        revoked = session.scalar(
+            select(RefreshToken).where(RefreshToken.user_id == seed.user_id)
+            .where(RefreshToken.family_id != expired.family_id)
+        )
+        assert revoked is not None
+        expired.expires_at = datetime(2000, 1, 1)
+        revoked.revoked_at = datetime.now()
+        session.commit()
+
+    responses = [
+        _post_refresh("unknown-invalid-token"),
+        _post_refresh(expired_login["refresh_token"]),
+        _post_refresh(revoked_login["refresh_token"]),
+    ]
+    assert [response.status_code for response in responses] == [401, 401, 401]
+    assert {response.text for response in responses} == {
+        '{"detail":"Invalid or expired refresh token."}'
+    }
+
+
+def test_concurrent_refresh_use_has_at_most_one_success(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    credential = _login_refresh(engine, seed)["refresh_token"]
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(lambda _index: _post_refresh(credential), range(2)))
+    assert sorted(response.status_code for response in responses) == [200, 401]
+
+
+def test_logout_is_idempotent_and_session_scoped(real_mysql_payroll) -> None:
+    from app.main import app
+
+    engine, seed = real_mysql_payroll
+    first = _login_refresh(engine, seed)["refresh_token"]
+    other = _login_refresh(engine, seed)["refresh_token"]
+    with TestClient(app, raise_server_exceptions=False) as client:
+        logged_out = client.post("/api/v1/auth/logout", json={"refresh_token": first})
+        repeated = client.post("/api/v1/auth/logout", json={"refresh_token": first})
+    assert logged_out.status_code == repeated.status_code == 204
+    assert _post_refresh(first).status_code == 401
+    assert _post_refresh(other).status_code == 200
+
+
+def test_refresh_rejects_inactive_user_and_revokes_family(real_mysql_payroll) -> None:
+    engine, seed = real_mysql_payroll
+    credential = _login_refresh(engine, seed)["refresh_token"]
+    from app.infrastructure.persistence.models.refresh_token import RefreshToken
+    from app.infrastructure.persistence.models.user import User
+    from app.infrastructure.security.refresh_token import hash_refresh_token
+
+    with Session(engine) as session:
+        user = session.get(User, seed.user_id)
+        row = session.scalar(select(RefreshToken).where(
+            RefreshToken.token_hash == hash_refresh_token(credential)
+        ))
+        assert user is not None and row is not None
+        family_id = row.family_id
+        user.status = "DISABLED"
+        session.commit()
+
+    response = _post_refresh(credential)
+    assert response.status_code == 401
+    with Session(engine) as session:
+        family_rows = list(session.scalars(select(RefreshToken).where(
+            RefreshToken.family_id == family_id
+        )))
+        assert family_rows and all(row.revoked_at is not None for row in family_rows)
+
+
+def test_refresh_rotation_rolls_back_if_replacement_insert_fails(
+    real_mysql_payroll, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine, seed = real_mysql_payroll
+    credential = _login_refresh(engine, seed)["refresh_token"]
+    from app.infrastructure.persistence.models.refresh_token import RefreshToken
+    from app.infrastructure.persistence.repositories.refresh_token_repository import (
+        RefreshTokenRepository,
+    )
+    from app.infrastructure.security.refresh_token import hash_refresh_token
+
+    original_add = RefreshTokenRepository.add
+
+    def fail_replacement(repository, row):
+        raise RuntimeError("controlled replacement persistence failure")
+
+    monkeypatch.setattr(RefreshTokenRepository, "add", fail_replacement)
+    response = _post_refresh(credential)
+    assert response.status_code == 500
+    monkeypatch.setattr(RefreshTokenRepository, "add", original_add)
+    with Session(engine) as session:
+        row = session.scalar(select(RefreshToken).where(
+            RefreshToken.token_hash == hash_refresh_token(credential)
+        ))
+        assert row is not None and row.revoked_at is None
+        family_rows = list(session.scalars(select(RefreshToken).where(
+            RefreshToken.family_id == row.family_id
+        )))
+        assert len(family_rows) == 1
+
+
+def test_logout_family_revocation_rolls_back_on_commit_failure(
+    real_mysql_payroll, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine, seed = real_mysql_payroll
+    credential = _login_refresh(engine, seed)["refresh_token"]
+    from app.infrastructure.persistence.models.refresh_token import RefreshToken
+    from app.infrastructure.security.refresh_token import hash_refresh_token
+    from app.infrastructure.database.unit_of_work import SQLAlchemyUnitOfWork
+    from app.main import app
+
+    with Session(engine) as session:
+        row = session.scalar(select(RefreshToken).where(
+            RefreshToken.token_hash == hash_refresh_token(credential)
+        ))
+        assert row is not None
+        family_id = row.family_id
+
+    original_commit = SQLAlchemyUnitOfWork.commit
+
+    def fail_commit(uow):
+        raise RuntimeError("controlled logout commit failure")
+
+    monkeypatch.setattr(SQLAlchemyUnitOfWork, "commit", fail_commit)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post("/api/v1/auth/logout", json={"refresh_token": credential})
+    assert response.status_code == 500
+    monkeypatch.setattr(SQLAlchemyUnitOfWork, "commit", original_commit)
+
+    with Session(engine) as session:
+        family_rows = list(session.scalars(select(RefreshToken).where(
+            RefreshToken.family_id == family_id
+        )))
+        assert len(family_rows) == 1
+        assert family_rows[0].revoked_at is None

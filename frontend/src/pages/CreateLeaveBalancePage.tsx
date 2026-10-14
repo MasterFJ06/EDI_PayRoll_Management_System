@@ -1,0 +1,23 @@
+import { useState, type FormEvent } from "react";
+import { ArrowLeft, Wallet } from "lucide-react";
+import { Link } from "react-router-dom";
+import { ApiError, apiClient, type LeaveBalanceCreateRequest, type LeaveBalanceCreateResponse } from "../api/client";
+
+const input = "mt-1.5 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10";
+export function CreateLeaveBalancePage() {
+  const [employeeId, setEmployeeId] = useState(""); const [typeId, setTypeId] = useState(""); const [year, setYear] = useState("");
+  const [allocated, setAllocated] = useState("0.00"); const [used, setUsed] = useState("0.00"); const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ kind: "error" | "success"; text: string } | null>(null);
+  async function submit(event: FormEvent) {
+    event.preventDefault(); setMessage(null);
+    const decimalPattern = /^\d{1,4}(\.\d{1,2})?$/;
+    if (!decimalPattern.test(allocated) || !decimalPattern.test(used)) { setMessage({ kind: "error", text: "Day values must be nonnegative with at most four integer and two decimal digits." }); return; }
+    if (Number(used) > Number(allocated)) { setMessage({ kind: "error", text: "Used days cannot exceed allocated days." }); return; }
+    const body: LeaveBalanceCreateRequest = { employee_id: Number(employeeId), leave_type_id: Number(typeId), balance_year: Number(year), allocated_days: allocated, used_days: used };
+    setBusy(true);
+    try { const result = await apiClient.post<LeaveBalanceCreateResponse>("/leave-balances", body); setMessage({ kind: "success", text: `Leave balance ${result.leave_balance_id} was created.` }); }
+    catch (error) { setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "Leave balance could not be created. Check the API connection and try again." }); }
+    finally { setBusy(false); }
+  }
+  return <div className="mx-auto max-w-2xl space-y-5"><Link to="/leave/balances" className="inline-flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-blue-700"><ArrowLeft size={16} />Leave balances</Link><section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-7"><div className="mb-5 flex items-start gap-3"><div className="grid size-10 place-items-center rounded-lg bg-blue-50 text-blue-700"><Wallet size={18} /></div><div><p className="text-xs text-slate-400">Workforce</p><h2 className="mt-1 text-xl font-semibold text-slate-900">Create Leave balance</h2></div></div><p className="mb-5 rounded-lg border border-blue-100 bg-blue-50/60 px-4 py-3 text-xs leading-5 text-blue-900">The API allows a linked employee to create their own balance; creating one for another employee requires the persisted HR permission. The backend verifies this relationship. No leave-type lookup endpoint is available; use an existing type ID.</p><form onSubmit={submit} className="space-y-4"><label className="block text-xs font-semibold text-slate-600">Employee ID<input required type="number" min="1" step="1" className={input} value={employeeId} onChange={(e) => setEmployeeId(e.target.value)} /></label><label className="block text-xs font-semibold text-slate-600">Leave type ID<input required type="number" min="1" step="1" className={input} value={typeId} onChange={(e) => setTypeId(e.target.value)} /></label><label className="block text-xs font-semibold text-slate-600">Balance year (stored value)<input required type="number" min="0" max="65535" step="1" className={input} value={year} onChange={(e) => setYear(e.target.value)} /></label><div className="grid gap-4 sm:grid-cols-2"><label className="text-xs font-semibold text-slate-600">Allocated days<input required type="number" min="0" max="9999.99" step="0.01" className={input} value={allocated} onChange={(e) => setAllocated(e.target.value)} /></label><label className="text-xs font-semibold text-slate-600">Used days<input required type="number" min="0" max="9999.99" step="0.01" className={input} value={used} onChange={(e) => setUsed(e.target.value)} /></label></div>{message && <div role={message.kind === "error" ? "alert" : "status"} className={`rounded-lg border px-4 py-3 text-sm ${message.kind === "error" ? "border-rose-200 bg-rose-50 text-rose-800" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>{message.text}</div>}<button disabled={busy} className="inline-flex h-10 w-full items-center justify-center rounded-lg bg-blue-700 px-5 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-wait disabled:opacity-60">{busy ? "Saving…" : "Create balance"}</button></form></section></div>;
+}

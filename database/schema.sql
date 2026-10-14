@@ -6,7 +6,7 @@
 -- Target DBMS : MySQL 8.x
 -- Engine      : InnoDB
 -- Normal Form : 3NF
--- Tables      : 32
+-- Tables      : 34
 -- =====================================================================
 
 
@@ -63,6 +63,34 @@ CREATE TABLE users (
                 'LOCKED'
             )
         )
+) ENGINE = InnoDB;
+
+
+-- =====================================================================
+-- 1A. REFRESH TOKENS
+-- =====================================================================
+
+CREATE TABLE refresh_tokens (
+    token_id BIGINT UNSIGNED AUTO_INCREMENT,
+    user_id BIGINT UNSIGNED NOT NULL,
+    family_id VARCHAR(36) NOT NULL,
+    token_hash CHAR(64) NOT NULL,
+    expires_at DATETIME(6) NOT NULL,
+    revoked_at DATETIME(6) NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+
+    CONSTRAINT pk_refresh_tokens
+        PRIMARY KEY (token_id),
+    CONSTRAINT uq_refresh_tokens_hash
+        UNIQUE (token_hash),
+    CONSTRAINT fk_refresh_tokens_user
+        FOREIGN KEY (user_id)
+        REFERENCES users(user_id)
+        ON DELETE RESTRICT
+        ON UPDATE RESTRICT,
+
+    INDEX idx_refresh_tokens_family (family_id, token_id),
+    INDEX idx_refresh_tokens_user (user_id)
 ) ENGINE = InnoDB;
 
 

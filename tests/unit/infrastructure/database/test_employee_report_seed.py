@@ -9,7 +9,13 @@ def test_employee_report_seed_assigns_only_employee_read_to_hr_role() -> None:
     assert "WHERE r.role_name = 'HR Administrator'" in seed
 
     role_assignments = seed.split("INSERT IGNORE INTO role_permissions")[1:]
-    payroll_assignment, employee_report_assignment, attendance_assignment, leave_assignment = role_assignments
+    (
+        payroll_assignment,
+        employee_report_assignment,
+        attendance_assignment,
+        leave_assignment,
+        leave_write_assignment,
+    ) = role_assignments
     assert "report.employee.read" not in payroll_assignment
     assert "p.permission_code = 'report.employee.read'" in employee_report_assignment
     assert "p.permission_code = 'report.attendance.read'" in attendance_assignment
@@ -18,3 +24,8 @@ def test_employee_report_seed_assigns_only_employee_read_to_hr_role() -> None:
         assert "report.payroll.read" not in hr_assignment
     assert "report.leave.read" not in payroll_assignment
     assert "p.permission_code = 'report.leave.read'" in leave_assignment
+    assert "workforce.leave.request.create_for_others" not in leave_assignment
+    assert "workforce.leave.balance.manage_for_others" not in leave_assignment
+    assert "workforce.leave.request.create_for_others" in leave_write_assignment
+    assert "workforce.leave.balance.manage_for_others" in leave_write_assignment
+    assert "WHERE r.role_name = 'HR Administrator'" in leave_write_assignment

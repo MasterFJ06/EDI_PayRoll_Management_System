@@ -73,6 +73,13 @@ class FakeSalaryRevisionComponentRepository:
     ) -> SimpleNamespace | None:
         return self.records.get((revision_id, component_id))
 
+    def get_by_revision(self, revision_id: int) -> list[SimpleNamespace]:
+        return [
+            record
+            for (record_revision_id, _), record in sorted(self.records.items())
+            if record_revision_id == revision_id
+        ]
+
     def add(self, record: SimpleNamespace) -> SimpleNamespace:
         self.records[(record.salary_revision_id, record.salary_component_id)] = record
         return record
@@ -101,9 +108,20 @@ class FakeUserRepository:
         return None
 
 
+class FakeAuthorizationRepository:
+    def __init__(self) -> None:
+        self.permission_codes = {"compensation.write"}
+        self.permission_checks: list[tuple[int, str]] = []
+
+    def has_permission(self, user_id: int, permission_code: str) -> bool:
+        self.permission_checks.append((user_id, permission_code))
+        return permission_code in self.permission_codes
+
+
 class FakeUnitOfWork:
     def __init__(self) -> None:
         self.users = FakeUserRepository()
+        self.authorization = FakeAuthorizationRepository()
         self.employees = FakeEmployeeRepository()
         self.salary_structures = FakeSalaryStructureRepository()
         self.salary_components = FakeSalaryComponentRepository()
@@ -237,6 +255,31 @@ def test_compensation_endpoints_require_authentication(client, fake_uow, path, p
     assert response.status_code == 401
 
 
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/v1/salary-structures", structure_payload()),
+        ("/api/v1/salary-components", component_payload()),
+        ("/api/v1/salary-revisions", revision_payload()),
+        ("/api/v1/salary-revision-components", revision_component_payload()),
+        ("/api/v1/employee-salary-assignments", assignment_payload()),
+    ],
+)
+def test_compensation_create_endpoints_require_compensation_write(
+    client, fake_uow, path, payload
+):
+    fake_uow.authorization.permission_codes.clear()
+
+    response = client.post(path, json=payload, headers=authenticated_headers())
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == (
+        "You do not have permission to access this resource."
+    )
+    assert fake_uow.authorization.permission_checks == [(1, "compensation.write")]
+    assert fake_uow.committed is False
+
+
 def test_create_salary_structure(client, fake_uow):
     response = client.post(
         "/api/v1/salary-structures",
@@ -253,6 +296,7 @@ def test_create_salary_structure(client, fake_uow):
         "status": "ACTIVE",
     }
     assert fake_uow.committed is True
+    assert fake_uow.authorization.permission_checks == [(1, "compensation.write")]
 
 
 def test_create_salary_component(client, fake_uow):
@@ -271,6 +315,7 @@ def test_create_salary_component(client, fake_uow):
         "status": "ACTIVE",
     }
     assert fake_uow.committed is True
+    assert fake_uow.authorization.permission_checks == [(1, "compensation.write")]
 
 
 def test_create_salary_revision(client, fake_uow):
@@ -290,6 +335,7 @@ def test_create_salary_revision(client, fake_uow):
         "effective_to": None,
     }
     assert fake_uow.committed is True
+    assert fake_uow.authorization.permission_checks == [(1, "compensation.write")]
 
 
 def test_create_salary_revision_component(client, fake_uow):
@@ -312,6 +358,7 @@ def test_create_salary_revision_component(client, fake_uow):
         "is_overtime_base": False,
     }
     assert fake_uow.committed is True
+    assert fake_uow.authorization.permission_checks == [(1, "compensation.write")]
 
 
 def test_create_percentage_salary_revision_component(client, fake_uow):
@@ -342,6 +389,47 @@ def test_create_percentage_salary_revision_component(client, fake_uow):
     assert response.json()["percentage_value"] == "10.0000"
 
 
+def test_salary_revision_component_cycle_returns_business_error_without_commit(
+    client, fake_uow
+):
+    seed_revision(fake_uow)
+    seed_component(fake_uow)
+    fake_uow.salary_components.add(
+        SimpleNamespace(
+            salary_component_id=0,
+            component_code="ALLOWANCE",
+            component_name="Allowance",
+            component_type="EARNING",
+            status="ACTIVE",
+        )
+    )
+    fake_uow.salary_revision_components.records[(1, 1)] = SimpleNamespace(
+        salary_revision_id=1,
+        salary_component_id=1,
+        calculation_type="PERCENTAGE",
+        base_component_id=2,
+        is_overtime_base=False,
+    )
+
+    response = client.post(
+        "/api/v1/salary-revision-components",
+        json=revision_component_payload(
+            salary_component_id=2,
+            calculation_type="PERCENTAGE",
+            fixed_amount=None,
+            percentage_value="10.0000",
+            base_component_id=1,
+        ),
+        headers=authenticated_headers(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "BUSINESS_RULE_VIOLATION"
+    assert "dependencies contain a cycle" in response.json()["detail"]
+    assert response.json()["error"]["request_id"]
+    assert fake_uow.committed is False
+
+
 def test_create_employee_salary_assignment(client, fake_uow):
     seed_revision(fake_uow)
     response = client.post(
@@ -359,6 +447,7 @@ def test_create_employee_salary_assignment(client, fake_uow):
         "effective_to": None,
     }
     assert fake_uow.committed is True
+    assert fake_uow.authorization.permission_checks == [(1, "compensation.write")]
 
 
 @pytest.mark.parametrize(

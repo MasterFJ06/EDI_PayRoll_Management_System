@@ -31,6 +31,10 @@ def test_required_snapshot_tables_cover_leave_report_path() -> None:
     }.issubset(_REQUIRED_PATH_TABLES)
 
 
+def test_required_snapshot_tables_include_refresh_token_lifecycle() -> None:
+    assert "refresh_tokens" in _REQUIRED_PATH_TABLES
+
+
 @pytest.mark.parametrize(
     "value",
     [
@@ -350,7 +354,7 @@ def test_schema_verification_error_preserves_exact_column_and_check_details() ->
 
 def test_current_snapshot_parser_captures_full_payroll_schema_definitions() -> None:
     schema = parse_schema_snapshot()
-    assert len(schema) == 33
+    assert len(schema) == 34
     assert schema["users"].columns["user_id"].type_sql == "bigint unsigned"
     assert schema["users"].columns["user_id"].auto_increment
     assert schema["users"].primary_key == ("user_id",)

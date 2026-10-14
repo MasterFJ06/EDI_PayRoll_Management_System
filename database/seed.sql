@@ -7,9 +7,11 @@ VALUES ('HR Administrator', 'Administration of employee reporting.');
 
 INSERT IGNORE INTO permissions (permission_code, description)
 VALUES
+    ('compensation.write', 'Create compensation structures, components, revisions, and employee assignments.'),
     ('payroll.run.create', 'Create a payroll run.'),
     ('payroll.run.read', 'View payroll runs.'),
     ('payroll.run.process', 'Process a payroll run.'),
+    ('payroll.run.recover', 'Recover an expired payroll processing attempt.'),
     ('payroll.run.retry', 'Retry a failed payroll run.'),
     ('payroll.run.finalize', 'Finalize a processed payroll run.'),
     ('payroll.payslip.create', 'Generate an individual payslip record.'),
@@ -20,6 +22,8 @@ VALUES
     ('organization.calendar.read', 'View organization work calendar versions.'),
     ('organization.calendar.manage', 'Manage organization work calendar versions and overrides.'),
     ('workforce.leave_type.manage', 'Create and manage Leave Types.'),
+    ('workforce.leave.request.create_for_others', 'Create Leave Requests for other employees.'),
+    ('workforce.leave.balance.manage_for_others', 'Create or adjust Leave Balances for other employees.'),
     ('workforce.leave.approve', 'Approve Leave Requests.'),
     ('workforce.leave.reject', 'Reject Leave Requests.'),
     ('workforce.leave.cancel', 'Cancel Leave Requests.'),
@@ -31,9 +35,11 @@ SELECT r.role_id, p.permission_id
 FROM roles AS r
 JOIN permissions AS p
   ON p.permission_code IN (
+      'compensation.write',
       'payroll.run.create',
       'payroll.run.read',
       'payroll.run.process',
+      'payroll.run.recover',
       'payroll.run.retry',
       'payroll.run.finalize',
       'payroll.payslip.create',
@@ -60,4 +66,14 @@ SELECT r.role_id, p.permission_id
 FROM roles AS r
 JOIN permissions AS p
   ON p.permission_code = 'report.leave.read'
+WHERE r.role_name = 'HR Administrator';
+
+INSERT IGNORE INTO role_permissions (role_id, permission_id)
+SELECT r.role_id, p.permission_id
+FROM roles AS r
+JOIN permissions AS p
+  ON p.permission_code IN (
+      'workforce.leave.request.create_for_others',
+      'workforce.leave.balance.manage_for_others'
+  )
 WHERE r.role_name = 'HR Administrator';

@@ -11,6 +11,9 @@ from app.application.payroll.payroll_processing_orchestrator import (
     PayrollProcessingOrchestrator,
 )
 from app.application.payroll.payroll_run_retry_service import PayrollRunRetryService
+from app.application.payroll.payroll_run_recovery_service import (
+    PayrollRunRecoveryService,
+)
 from app.application.payroll.payroll_run_finalization_service import (
     PayrollRunFinalizationService,
 )
@@ -119,6 +122,31 @@ def retry_payroll_run(
     )
 
     response = PayrollRunService(uow).get(run_id)
+    if response is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Payroll Run not found.",
+        )
+    return response
+
+
+@router.post(
+    "/runs/{run_id}/recover",
+    response_model=PayrollRunResponse,
+)
+def recover_payroll_run(
+    run_id: Annotated[int, Path(gt=0)],
+    request: Request,
+    current_user: Annotated[
+        User, Depends(require_permission("payroll.run.recover"))
+    ],
+    uow: Annotated[UnitOfWork, Depends(get_unit_of_work)],
+) -> PayrollRunResponse:
+    response = PayrollRunRecoveryService(uow).recover_expired_attempt(
+        run_id,
+        current_user.user_id,
+        getattr(request.state, "request_id", None),
+    )
     if response is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

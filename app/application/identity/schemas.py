@@ -20,4 +20,15 @@ class UserLoginRequest(BaseModel):
 
 class UserLoginResponse(BaseModel):
     access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str = Field(min_length=1, max_length=512)
+
+
+class TokenPairResponse(BaseModel):
+    access_token: str
+    refresh_token: str
     token_type: str = "bearer"
