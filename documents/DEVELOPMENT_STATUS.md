@@ -46,10 +46,17 @@ Security:
 - persisted user-role and role-permission checks; inactive roles grant no permissions
 - protected API endpoints
 
-The seed catalog defines the `Payroll Administrator` role and the granular payroll
-permissions. It does not assign any user to that role. Payroll authorization currently
-supports `payroll.run.create` and `payroll.run.read`; no Payroll API operations are
-implemented by this prerequisite.
+The idempotent seed catalog defines the Payroll Administrator and HR
+Administrator role-permission grants described in the API contract and
+`database/seed.sql`. The Payroll Administrator grants include Compensation
+creation, payroll run create/read/process/retry/recovery/finalization,
+payslip-record creation, and payroll reports. HR grants include employee,
+attendance, and Leave reports plus the seeded cross-employee Leave operations.
+The seed does not create a user or assign a user to either role; other catalog
+permissions are not automatically assigned to these roles. There is no role
+assignment API. `user_roles.assigned_by_user_id` is required, so privileged
+demonstration-account provisioning still needs a trusted, separately
+authorized bootstrap process; users must not self-assign a role.
 
 ---
 
@@ -801,3 +808,30 @@ was added.
 Focused repository, API, existing Payroll, full unit, and database-safety
 validation results are to be recorded after execution. Strict ephemeral MySQL 8
 runtime validation is pending; no runtime result is claimed.
+
+## Developer and Operator Documentation
+
+Added `documents/DEVELOPMENT_RUNBOOK.md` and linked it from the README. The
+runbook documents verified local setup, current schema/seed and migration
+boundaries, application startup, health-check limitations, persisted RBAC, and
+test commands. It also records two unresolved setup limitations: the example
+database name differs from the fixed name in `database/schema.sql`, and the
+application has no role-assignment or first-administrator bootstrap flow.
+No runtime behavior or test result was changed by this documentation work.
+
+## Frontend Foundation
+
+Added a React/TypeScript/Vite frontend in `frontend/` with login, an
+authenticated application shell, a dashboard connected to the existing API
+health endpoint, and a centralized API client for login, refresh, logout, and
+authenticated requests. The Employee Management slice now provides a
+paginated directory using the persisted employee report, exact supported
+filters, employee detail by exact employee-code report filter, and employee
+creation through the existing API. There is no employee update endpoint, so
+editing is not offered. Department/designation lookup endpoints are also
+absent; the create form requires existing IDs rather than fabricated options.
+Access and refresh tokens remain in memory; the UI does not infer persisted
+roles or permissions from client-side data. Dashboard business metrics and
+activity remain unavailable because the API does not provide those endpoints.
+Frontend typecheck and production build pass locally. No backend runtime
+integration or browser login flow has been validated.

@@ -804,19 +804,29 @@ active roles grant access. Missing or invalid authentication returns HTTP 401. A
 authenticated user without the required permission returns HTTP 403. Clients cannot
 provide the user identity, role, or permission used for the decision.
 
-The development seed catalog includes the `Payroll Administrator` role and
-granular permissions `payroll.run.create`, `payroll.run.read`,
+The idempotent development seed catalog is defined in `database/seed.sql` and
+does not create users or assign users to roles. It grants the following
+permissions to the seeded `Payroll Administrator` role:
+`compensation.write`, `payroll.run.create`, `payroll.run.read`,
 `payroll.run.process`, `payroll.run.retry`, `payroll.run.recover`,
-`payroll.run.finalize`,
-`payroll.payslip.create`, and `report.payroll.read`, plus the
-`HR Administrator` role with `report.employee.read` and
-`report.attendance.read`. `payroll.run.recover` is assigned only to the
-Payroll Administrator role. The approved `report.leave.read` permission and HR
-role assignment are pending implementation. No user is assigned to either
-role by the seed data. Implemented Payroll Run operations are
-documented in the Phase 2A, Phase 2B-1, retry, and finalization sections above.
-Individual payslip record generation is implemented without document
-generation; payslip read/download operations remain unimplemented.
+`payroll.run.finalize`, `payroll.payslip.create`, and `report.payroll.read`.
+The seeded `HR Administrator` role receives `report.employee.read`,
+`report.attendance.read`, `report.leave.read`,
+`workforce.leave.request.create_for_others`, and
+`workforce.leave.balance.manage_for_others`. These role grants are separate;
+the seed does not grant payroll permissions to HR or HR-report permissions to
+Payroll Administrator. Other permissions present in the catalog are not
+assigned to either role by this seed. Existing extra persisted grants are not
+removed by applying the seed.
+
+Role assignment is not exposed as an API operation. The `user_roles` table
+requires an `assigned_by_user_id`; privileged demonstration-user provisioning
+therefore requires a trusted, separately authorized process and must not be
+simulated by self-assignment. See the development runbook for the supported
+ordinary-user setup and this limitation. Implemented Payroll Run operations
+are documented in the Phase 2A, Phase 2B-1, retry, recovery, and finalization
+sections above. Individual payslip record generation is implemented without
+document generation; payslip read/download operations remain unimplemented.
 
 ---
 

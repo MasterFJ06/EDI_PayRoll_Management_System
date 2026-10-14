@@ -1,0 +1,161 @@
+name: EPMS Frontend and Backend Smoke Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-backend-smoke:
+    name: Browser smoke test on disposable MySQL 8
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: epms_frontend_smoke_root_test_only
+          MYSQL_DATABASE: epms_frontend_smoke_test
+          MYSQL_USER: epms_ci
+          MYSQL_PASSWORD: epms_frontend_smoke_app_test_only
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --host=127.0.0.1 --user=root --password=epms_frontend_smoke_root_test_only"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+          --health-start-period=30s
+    env:
+      APP_ENV: test
+      DEBUG: "false"
+      DATABASE_HOST: 127.0.0.1
+      DATABASE_PORT: "3306"
+      DATABASE_NAME: epms_frontend_smoke_test
+      DATABASE_USER: epms_ci
+      DATABASE_PASSWORD: epms_frontend_smoke_app_test_only
+      JWT_SECRET_KEY: epms_frontend_smoke_ephemeral_signing_key_only
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: "1"
+      REFRESH_TOKEN_EXPIRE_DAYS: "1"
+      CORS_ORIGINS: http://127.0.0.1:5173
+      EPMS_MYSQL_TEST_URL: mysql+pymysql://epms_ci:epms_frontend_smoke_app_test_only@127.0.0.1:3306/epms_frontend_smoke_test
+      EPMS_FRONTEND_SMOKE_TEST: "1"
+      EPMS_SMOKE_API_BASE_URL: http://127.0.0.1:8000/api/v1
+      EPMS_SMOKE_WEB_BASE_URL: http://127.0.0.1:5173
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Prepare schema snapshot for the exact smoke database
+        shell: bash
+        run: |
+          set -euo pipefail
+          schema_file="$(python scripts/prepare_mysql_test_schema.py --database-name epms_frontend_smoke_test)"
+          test -f "$schema_file"
+          printf 'EPMS_PREPARED_SCHEMA=%s\n' "$schema_file" >> "$GITHUB_ENV"
+
+      - name: Import prepared snapshot into ephemeral MySQL
+        shell: bash
+        env:
+          MYSQL_PWD: epms_frontend_smoke_root_test_only
+        run: |
+          set -euo pipefail
+          test -n "${EPMS_PREPARED_SCHEMA:-}"
+          test -f "$EPMS_PREPARED_SCHEMA"
+          mysql --protocol=TCP --host=127.0.0.1 --port=3306 --user=root < "$EPMS_PREPARED_SCHEMA"
+
+      - name: Verify database target and snapshot emptiness
+        shell: bash
+        env:
+          MYSQL_PWD: epms_frontend_smoke_app_test_only
+        run: |
+          set -euo pipefail
+          target="$(mysql --protocol=TCP --host=127.0.0.1 --port=3306 --user=epms_ci --database=epms_frontend_smoke_test --batch --skip-column-names --execute='SELECT SUBSTRING_INDEX(VERSION(), ".", 1), DATABASE()')"
+          test "$target" = $'8\tepms_frontend_smoke_test'
+          python scripts/frontend_smoke_setup.py --assert-empty
+
+      - name: Seed only the RBAC catalog and role grants
+        shell: bash
+        env:
+          MYSQL_PWD: epms_frontend_smoke_app_test_only
+        run: |
+          set -euo pipefail
+          mysql --protocol=TCP --host=127.0.0.1 --port=3306 --user=epms_ci --database=epms_frontend_smoke_test < database/seed.sql
+
+      - name: Start FastAPI against the verified smoke database
+        shell: bash
+        run: |
+          set -euo pipefail
+          nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > "$RUNNER_TEMP/epms-api.log" 2>&1 &
+          for attempt in $(seq 1 60); do
+            if curl --silent --fail http://127.0.0.1:8000/api/v1/health > /dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "FastAPI did not become ready; see the runner-local log." >&2
+          exit 1
+
+      - name: Register synthetic users and prepare minimal reference data
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/frontend_smoke_setup.py --provision --fixture-file "$RUNNER_TEMP/epms-smoke/fixture.json"
+          printf 'EPMS_SMOKE_FIXTURE_FILE=%s\n' "$RUNNER_TEMP/epms-smoke/fixture.json" >> "$GITHUB_ENV"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          VITE_API_BASE_URL: http://127.0.0.1:8000/api/v1
+        run: npm run build
+
+      - name: Start Vite and wait for readiness
+        working-directory: frontend
+        shell: bash
+        env:
+          VITE_API_BASE_URL: http://127.0.0.1:8000/api/v1
+        run: |
+          set -euo pipefail
+          nohup npm run dev -- --host 127.0.0.1 > "$RUNNER_TEMP/epms-vite.log" 2>&1 &
+          for attempt in $(seq 1 60); do
+            if curl --silent --fail http://127.0.0.1:5173/ > /dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Vite did not become ready; see the runner-local log." >&2
+          exit 1
+
+      - name: Install Chromium for Playwright
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run real API/browser smoke tests
+        working-directory: frontend
+        env:
+          EPMS_SMOKE_API_BASE_URL: http://127.0.0.1:8000/api/v1
+          EPMS_SMOKE_WEB_BASE_URL: http://127.0.0.1:5173
+          VITE_API_BASE_URL: http://127.0.0.1:8000/api/v1
+        run: npm run test:smoke
