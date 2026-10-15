@@ -84,3 +84,6 @@ dist/
 *.tmp
 *.temp
 *.bak
+
+#files
+node_modules/
