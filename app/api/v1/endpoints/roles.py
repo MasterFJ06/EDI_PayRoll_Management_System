@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.dependencies.current_user import get_current_user
+from app.api.dependencies.permissions import require_permission
 from app.api.dependencies.unit_of_work import get_unit_of_work
 from app.application.common.unit_of_work import UnitOfWork
 from app.application.identity.role_service import RoleService
@@ -54,7 +55,7 @@ def get_role(
 )
 def create_role(
     request: RoleCreateRequest,
-    _: Annotated[User, Depends(get_current_user)],
+    _: Annotated[User, Depends(require_permission("roles.manage"))],
     uow: Annotated[UnitOfWork, Depends(get_unit_of_work)],
 ) -> RoleResponse:
     service = RoleService(uow)
@@ -68,7 +69,7 @@ def create_role(
 def update_role(
     role_id: int,
     request: RoleUpdateRequest,
-    _: Annotated[User, Depends(get_current_user)],
+    _: Annotated[User, Depends(require_permission("roles.manage"))],
     uow: Annotated[UnitOfWork, Depends(get_unit_of_work)],
 ) -> RoleResponse:
     service = RoleService(uow)
@@ -76,3 +77,4 @@ def update_role(
     if updated is None:
         raise HTTPException(status_code=404, detail="Role not found.")
     return updated
+

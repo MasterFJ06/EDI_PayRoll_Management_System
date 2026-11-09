@@ -10,12 +10,13 @@ import { StatusBadge } from "@/components/common/StatusBadge";
 import { DataTable, type Column } from "@/components/tables/DataTable";
 import { ErrorState } from "@/components/common/ErrorState";
 import { listValidationIssues, resolveValidationIssue } from "@/services/validationService";
-import { employeeName } from "@/data/mockData";
+import { listEmployees } from "@/services/employeeService";
 import { formatDateTime } from "@/utils/format";
-import type { PayrollValidationIssue } from "@/types";
+import type { PayrollValidationIssue, Employee } from "@/types";
 
 export default function PayrollValidation() {
   const [items, setItems] = useState<PayrollValidationIssue[]>([]);
+  const [employeesList, setEmployeesList] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [search, setSearch] = useState("");
@@ -23,12 +24,34 @@ export default function PayrollValidation() {
 
   async function load() {
     setLoading(true); setError(false);
-    try { setItems(await listValidationIssues()); } catch { setError(true); } finally { setLoading(false); }
+    try {
+      const [issuesData, empData] = await Promise.all([
+        listValidationIssues(),
+        listEmployees().catch(() => [] as Employee[]),
+      ]);
+      setItems(issuesData);
+      setEmployeesList(empData);
+    } catch {
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
   }
   useEffect(() => { load(); }, []);
 
+  function getEmployeeName(id: string): string {
+    if (!id) return "Unknown";
+    const emp = employeesList.find((e) => e.id === id || e.employeeCode === id);
+    if (emp) return `${emp.firstName} ${emp.lastName}`;
+    return id;
+  }
+
   const filtered = items.filter((v) => {
-    const matchSearch = employeeName(v.employeeId).toLowerCase().includes(search.toLowerCase()) || v.validationType.toLowerCase().includes(search.toLowerCase());
+    const empName = getEmployeeName(v.employeeId);
+    const matchSearch =
+      empName.toLowerCase().includes(search.toLowerCase()) ||
+      v.employeeId.toLowerCase().includes(search.toLowerCase()) ||
+      v.validationType.toLowerCase().includes(search.toLowerCase());
     const matchSeverity = severityFilter === "all" || v.severity === severityFilter;
     return matchSearch && matchSeverity;
   });
@@ -41,7 +64,12 @@ export default function PayrollValidation() {
   async function handleResolve(v: PayrollValidationIssue) { await resolveValidationIssue(v.id); load(); }
 
   const columns: Column<PayrollValidationIssue>[] = [
-    { key: "employee", header: "Employee", sortValue: (v) => employeeName(v.employeeId), render: (v) => <span className="font-medium text-text">{employeeName(v.employeeId)}</span> },
+    {
+      key: "employee",
+      header: "Employee",
+      sortValue: (v) => getEmployeeName(v.employeeId),
+      render: (v) => <span className="font-medium text-text">{getEmployeeName(v.employeeId)}</span>,
+    },
     { key: "type", header: "Validation Type", render: (v) => v.validationType },
     { key: "message", header: "Message", render: (v) => <span className="text-text-muted max-w-xs block">{v.message}</span> },
     { key: "severity", header: "Severity", render: (v) => (

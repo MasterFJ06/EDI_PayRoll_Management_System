@@ -11,10 +11,10 @@ import { StatusBadge } from "@/components/common/StatusBadge";
 import { DataTable, type Column } from "@/components/tables/DataTable";
 import { ErrorState } from "@/components/common/ErrorState";
 import { listPayroll, processPayrollMonth, approvePayroll } from "@/services/payrollService";
-import { employeeName } from "@/data/mockData";
+import { listEmployees } from "@/services/employeeService";
 import { formatINR, monthLabel } from "@/utils/format";
 import { useAuth } from "@/context/AuthContext";
-import type { PayrollRecord } from "@/types";
+import type { PayrollRecord, Employee } from "@/types";
 
 const STEPS = [
   { label: "Select Payroll Month", icon: CalendarClock },
@@ -36,6 +36,7 @@ const STEPS = [
 export default function PayrollProcessing() {
   const { can } = useAuth();
   const [items, setItems] = useState<PayrollRecord[]>([]);
+  const [employeesList, setEmployeesList] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [month, setMonth] = useState("2026-08");
@@ -44,9 +45,27 @@ export default function PayrollProcessing() {
 
   async function load() {
     setLoading(true); setError(false);
-    try { setItems(await listPayroll()); } catch { setError(true); } finally { setLoading(false); }
+    try {
+      const [payrollData, empData] = await Promise.all([
+        listPayroll(),
+        listEmployees().catch(() => [] as Employee[]),
+      ]);
+      setItems(payrollData);
+      setEmployeesList(empData);
+    } catch {
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
   }
   useEffect(() => { load(); }, []);
+
+  function getEmployeeName(id: string): string {
+    if (!id) return "Unknown";
+    const emp = employeesList.find((e) => e.id === id || e.employeeCode === id);
+    if (emp) return `${emp.firstName} ${emp.lastName}`;
+    return id;
+  }
 
   const monthRecords = items.filter((p) => p.payrollMonth === month);
   const statusOf = monthRecords[0]?.status ?? "Draft";
@@ -69,7 +88,12 @@ export default function PayrollProcessing() {
   }
 
   const columns: Column<PayrollRecord>[] = [
-    { key: "employee", header: "Employee", sortValue: (p) => employeeName(p.employeeId), render: (p) => <span className="font-medium text-text">{employeeName(p.employeeId)}</span> },
+    {
+      key: "employee",
+      header: "Employee",
+      sortValue: (p) => getEmployeeName(p.employeeId),
+      render: (p) => <span className="font-medium text-text">{getEmployeeName(p.employeeId)}</span>,
+    },
     { key: "basic", header: "Basic Salary", sortValue: (p) => p.basicSalary, render: (p) => formatINR(p.basicSalary) },
     { key: "allowances", header: "Allowances", sortValue: (p) => p.allowances, render: (p) => formatINR(p.allowances) },
     { key: "overtime", header: "Overtime", sortValue: (p) => p.overtime, render: (p) => formatINR(p.overtime) },

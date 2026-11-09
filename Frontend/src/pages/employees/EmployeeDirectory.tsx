@@ -11,16 +11,19 @@ import { EmployeeAvatar } from "@/components/common/EmployeeAvatar";
 import { DataTable, type Column } from "@/components/tables/DataTable";
 import { ErrorState } from "@/components/common/ErrorState";
 import { listEmployees, updateEmployee } from "@/services/employeeService";
-import { departments, designations, departmentName, designationName } from "@/data/mockData";
+import { listDepartments } from "@/services/departmentService";
+import { listDesignations } from "@/services/designationService";
 import { formatDate } from "@/utils/format";
 import { useAuth } from "@/context/AuthContext";
-import type { Employee } from "@/types";
+import type { Department, Designation, Employee } from "@/types";
 import { EmployeeFormDialog } from "./EmployeeFormDialog";
 
 export default function EmployeeDirectory() {
   const { can } = useAuth();
   const navigate = useNavigate();
   const [items, setItems] = useState<Employee[]>([]);
+  const [departmentsList, setDepartmentsList] = useState<Department[]>([]);
+  const [designationsList, setDesignationsList] = useState<Designation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [search, setSearch] = useState("");
@@ -33,9 +36,30 @@ export default function EmployeeDirectory() {
 
   async function load() {
     setLoading(true); setError(false);
-    try { setItems(await listEmployees()); } catch { setError(true); } finally { setLoading(false); }
+    try {
+      const [empData, deptData, desigData] = await Promise.all([
+        listEmployees(),
+        listDepartments(),
+        listDesignations(),
+      ]);
+      setItems(empData);
+      setDepartmentsList(deptData);
+      setDesignationsList(desigData);
+    } catch {
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
   }
   useEffect(() => { load(); }, []);
+
+  function getDepartmentName(id: string): string {
+    return departmentsList.find((d) => d.id === id)?.name ?? id;
+  }
+
+  function getDesignationName(id: string): string {
+    return designationsList.find((d) => d.id === id)?.name ?? id;
+  }
 
   const filtered = items.filter((e) => {
     const matchSearch = `${e.firstName} ${e.lastName} ${e.employeeCode} ${e.email}`.toLowerCase().includes(search.toLowerCase());
@@ -63,8 +87,8 @@ export default function EmployeeDirectory() {
       </div>
     ) },
     { key: "code", header: "Employee Code", sortValue: (e) => e.employeeCode, render: (e) => e.employeeCode },
-    { key: "department", header: "Department", sortValue: (e) => departmentName(e.departmentId), render: (e) => departmentName(e.departmentId) },
-    { key: "designation", header: "Designation", sortValue: (e) => designationName(e.designationId), render: (e) => designationName(e.designationId) },
+    { key: "department", header: "Department", sortValue: (e) => getDepartmentName(e.departmentId), render: (e) => getDepartmentName(e.departmentId) },
+    { key: "designation", header: "Designation", sortValue: (e) => getDesignationName(e.designationId), render: (e) => getDesignationName(e.designationId) },
     { key: "type", header: "Employment Type", render: (e) => e.employmentType },
     { key: "joining", header: "Joining Date", sortValue: (e) => e.joiningDate, render: (e) => formatDate(e.joiningDate) },
     { key: "status", header: "Status", render: (e) => <StatusBadge status={e.employmentStatus} /> },
@@ -90,11 +114,11 @@ export default function EmployeeDirectory() {
         <SearchBar value={search} onChange={setSearch} placeholder="Search by name, code or email" className="w-full sm:w-64" />
         <Select value={deptFilter} onChange={(e) => setDeptFilter(e.target.value)} className="w-full sm:w-44">
           <option value="all">All Departments</option>
-          {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          {departmentsList.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
         </Select>
         <Select value={desigFilter} onChange={(e) => setDesigFilter(e.target.value)} className="w-full sm:w-44">
           <option value="all">All Designations</option>
-          {designations.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          {designationsList.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
         </Select>
         <Select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="w-full sm:w-40">
           <option value="all">All Types</option>
@@ -113,7 +137,15 @@ export default function EmployeeDirectory() {
         )}
       </div>
 
-      <EmployeeFormDialog open={formOpen} onClose={() => setFormOpen(false)} employee={editing} onSaved={() => { setFormOpen(false); load(); }} />
+      <EmployeeFormDialog
+        open={formOpen}
+        onClose={() => setFormOpen(false)}
+        employee={editing}
+        departments={departmentsList}
+        designations={designationsList}
+        employees={items}
+        onSaved={() => { setFormOpen(false); load(); }}
+      />
     </div>
   );
 }

@@ -24,10 +24,13 @@ export default function UsersList() {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<AppUser | null>(null);
   const [deleting, setDeleting] = useState<AppUser | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
 
   async function load() {
     setLoading(true);
     setError(false);
+    setActionError(null);
     try {
       const data = await listUsers();
       setUsers(data);
@@ -69,7 +72,7 @@ export default function UsersList() {
           <Button variant="ghost" size="icon" onClick={() => { setEditing(u); setFormOpen(true); }} aria-label="Edit user">
             <Pencil className="h-4 w-4" />
           </Button>
-          <Button variant="ghost" size="icon" onClick={() => setDeleting(u)} aria-label="Delete user">
+          <Button variant="ghost" size="icon" onClick={() => { setActionError(null); setDeleting(u); }} aria-label="Delete user">
             <Trash2 className="h-4 w-4 text-danger" />
           </Button>
         </div>
@@ -85,6 +88,12 @@ export default function UsersList() {
         icon={<UsersIcon className="h-5 w-5" />}
         actions={<Button onClick={() => { setEditing(null); setFormOpen(true); }}><UserPlus className="h-4 w-4" /> Add User</Button>}
       />
+
+      {actionError && (
+        <div className="mb-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">
+          {actionError}
+        </div>
+      )}
 
       <FilterBar>
         <SearchBar value={search} onChange={setSearch} placeholder="Search by name, username or email" className="w-full sm:w-72" />
@@ -116,7 +125,23 @@ export default function UsersList() {
         description={`Are you sure you want to delete ${deleting?.firstName} ${deleting?.lastName}? This action cannot be undone.`}
         confirmLabel="Delete"
         danger
-        onConfirm={async () => { if (deleting) { await deleteUser(deleting.id); setDeleting(null); load(); } }}
+        onConfirm={async () => {
+          if (deleting) {
+            try {
+              setActionError(null);
+              await deleteUser(deleting.id);
+              setDeleting(null);
+              load();
+            } catch (err: any) {
+              const msg =
+                err?.response?.data?.detail ||
+                err?.response?.data?.message ||
+                err?.message ||
+                "Failed to delete user.";
+              setActionError(typeof msg === "string" ? msg : JSON.stringify(msg));
+            }
+          }
+        }}
       />
     </div>
   );

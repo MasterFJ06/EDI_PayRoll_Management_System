@@ -85,7 +85,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(USER_KEY); setSessionExpired(false);
   }, []);
 
-  const can = useCallback((permission: Permission) => hasPermission(user?.role, permission), [user]);
+  const can = useCallback((permission: Permission) => {
+    if (user?.role === "System Administrator") return true;
+    if (Array.isArray(user?.permissions) && user.permissions.length > 0) {
+      return user.permissions.includes(permission);
+    }
+    return hasPermission(user?.role, permission);
+  }, [user]);
+
   const value = useMemo(() => ({ user, accessToken, isAuthenticated: Boolean(user && accessToken), isLoading, sessionExpired, login, logout, switchDemoRole, can, dismissSessionExpired: () => setSessionExpired(false) }), [user, accessToken, isLoading, sessionExpired, login, logout, switchDemoRole, can]);
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

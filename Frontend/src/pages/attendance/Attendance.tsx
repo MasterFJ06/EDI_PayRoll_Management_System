@@ -17,10 +17,10 @@ import { DashboardCard } from "@/components/common/DashboardCard";
 import { DataTable, type Column } from "@/components/tables/DataTable";
 import { ErrorState } from "@/components/common/ErrorState";
 import { listAttendance, createAttendance } from "@/services/attendanceService";
-import { employees, employeeName } from "@/data/mockData";
+import { listEmployees } from "@/services/employeeService";
 import { formatDate } from "@/utils/format";
 import { useAuth } from "@/context/AuthContext";
-import type { AttendanceRecord, AttendanceStatus } from "@/types";
+import type { AttendanceRecord, AttendanceStatus, Employee } from "@/types";
 
 const schema = z.object({
   employeeId: z.string().min(1, "Employee is required"),
@@ -35,9 +35,11 @@ type FormValues = z.infer<typeof schema>;
 export default function Attendance() {
   const { can } = useAuth();
   const [items, setItems] = useState<AttendanceRecord[]>([]);
+  const [employeesList, setEmployeesList] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [search, setSearch] = useState("");
+  const [employeeFilter, setEmployeeFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [dateFilter, setDateFilter] = useState("all");
   const [formOpen, setFormOpen] = useState(false);
@@ -48,18 +50,39 @@ export default function Attendance() {
   });
 
   async function load() {
-    setLoading(true); setError(false);
-    try { setItems(await listAttendance()); } catch { setError(true); } finally { setLoading(false); }
+    setLoading(true);
+    setError(false);
+    try {
+      const [attData, empData] = await Promise.all([
+        listAttendance(),
+        listEmployees(),
+      ]);
+      setItems(attData);
+      setEmployeesList(empData);
+    } catch {
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
   }
   useEffect(() => { load(); }, []);
+
+  function getEmployeeName(id: string): string {
+    const emp = employeesList.find((e) => e.id === id || e.employeeCode === id);
+    if (emp) return `${emp.firstName} ${emp.lastName}`;
+    return id || "Unknown";
+  }
 
   const dates = Array.from(new Set(items.map((a) => a.attendanceDate))).sort().reverse();
 
   const filtered = items.filter((a) => {
-    const matchSearch = employeeName(a.employeeId).toLowerCase().includes(search.toLowerCase());
+    const empName = getEmployeeName(a.employeeId);
+    const matchSearch = empName.toLowerCase().includes(search.toLowerCase()) ||
+      a.employeeId.toLowerCase().includes(search.toLowerCase());
+    const matchEmployee = employeeFilter === "all" || a.employeeId === employeeFilter;
     const matchStatus = statusFilter === "all" || a.status === statusFilter;
     const matchDate = dateFilter === "all" || a.attendanceDate === dateFilter;
-    return matchSearch && matchStatus && matchDate;
+    return matchSearch && matchEmployee && matchStatus && matchDate;
   });
 
   const counts = (["Present", "Absent", "Late", "Half-Day", "Holiday"] as AttendanceStatus[]).map((s) => ({
@@ -67,19 +90,37 @@ export default function Attendance() {
   }));
   const totalOvertime = items.reduce((s, a) => s + a.overtimeHours, 0);
 
+  function openCreate() {
+    reset({
+      employeeId: employeesList[0]?.id ?? "",
+      attendanceDate: new Date().toISOString().slice(0, 10),
+      status: "Present",
+      checkIn: "09:00",
+      checkOut: "",
+      remarks: "",
+    });
+    setFormOpen(true);
+  }
+
   async function onSubmit(values: FormValues) {
     await createAttendance({
       id: `ATT${Date.now()}`, ...values, checkIn: values.checkIn || null, checkOut: values.checkOut || null,
       workingHours: values.status === "Absent" ? 0 : values.status === "Half-Day" ? 4 : 8.3,
       overtimeHours: 0, remarks: values.remarks ?? "",
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      ...( { attendance_status: values.status.toUpperCase() } as any ),
     });
     setFormOpen(false);
     load();
   }
 
   const columns: Column<AttendanceRecord>[] = [
-    { key: "employee", header: "Employee", sortValue: (a) => employeeName(a.employeeId), render: (a) => <span className="font-medium text-text">{employeeName(a.employeeId)}</span> },
+    {
+      key: "employee",
+      header: "Employee",
+      sortValue: (a) => getEmployeeName(a.employeeId),
+      render: (a) => <span className="font-medium text-text">{getEmployeeName(a.employeeId)}</span>,
+    },
     { key: "date", header: "Date", sortValue: (a) => a.attendanceDate, render: (a) => formatDate(a.attendanceDate) },
     { key: "checkin", header: "Check-In", render: (a) => a.checkIn ?? "\u2014" },
     { key: "checkout", header: "Check-Out", render: (a) => a.checkOut ?? "\u2014" },
@@ -94,7 +135,7 @@ export default function Attendance() {
         title="Attendance Management"
         description="Daily check-ins, working hours and attendance status across the organization."
         icon={<CalendarCheck className="h-5 w-5" />}
-        actions={can("attendance.create") ? <Button onClick={() => setFormOpen(true)}><Plus className="h-4 w-4" /> Mark Attendance</Button> : undefined}
+        actions={can("attendance.create") ? <Button onClick={openCreate}><Plus className="h-4 w-4" /> Mark Attendance</Button> : undefined}
       />
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6 mb-6">
@@ -108,6 +149,14 @@ export default function Attendance() {
 
       <FilterBar>
         <SearchBar value={search} onChange={setSearch} placeholder="Search by employee" className="w-full sm:w-64" />
+        <Select value={employeeFilter} onChange={(e) => setEmployeeFilter(e.target.value)} className="w-full sm:w-48">
+          <option value="all">All Employees</option>
+          {employeesList.map((e) => (
+            <option key={e.id} value={e.id}>
+              {e.firstName} {e.lastName} ({e.employeeCode})
+            </option>
+          ))}
+        </Select>
         <Select value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} className="w-full sm:w-44">
           <option value="all">All Dates</option>
           {dates.map((d) => <option key={d} value={d}>{formatDate(d)}</option>)}
@@ -135,8 +184,12 @@ export default function Attendance() {
           <div>
             <Label required>Employee</Label>
             <Select {...register("employeeId")} error={!!errors.employeeId}>
-              <option value="">Select employee</option>
-              {employees.map((e) => <option key={e.id} value={e.id}>{e.firstName} {e.lastName} ({e.employeeCode})</option>)}
+              <option value="">{employeesList.length === 0 ? "No employees available" : "Select employee"}</option>
+              {employeesList.map((e) => (
+                <option key={e.id} value={e.id}>
+                  {e.firstName} {e.lastName} ({e.employeeCode})
+                </option>
+              ))}
             </Select>
             {errors.employeeId && <p className="mt-1 text-xs text-danger">{errors.employeeId.message}</p>}
           </div>

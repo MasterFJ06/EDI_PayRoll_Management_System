@@ -34,9 +34,13 @@ export interface AppUser {
   phone: string;
   employeeId: string | null;
   role: Role;
+  permissions?: Permission[];
   status: "Active" | "Inactive";
   avatarColor: string;
+  password?: string;
 }
+
+
 
 export interface Department {
   id: string;
@@ -185,6 +189,15 @@ export interface Deduction {
   ruleApplied: string;
   effectiveDate: string;
   status: "Active" | "Inactive";
+}
+
+export interface TaxRule {
+  id: string;
+  rule_name: string;
+  regime: string;
+  slab_details: string;
+  applicable_year: string;
+  is_active: boolean;
 }
 
 export type ValidationSeverity = "Information" | "Warning" | "Error" | "Critical";

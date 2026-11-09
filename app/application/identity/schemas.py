@@ -26,6 +26,7 @@ class UserMeResponse(BaseModel):
     phone: str = ""
     employeeId: str | None = Field(default=None, alias="employee_id")
     role: str = "Employee"
+    permissions: list[str] = Field(default_factory=list)
     status: Literal["Active", "Inactive"] = "Active"
     avatarColor: str = Field(default="bg-blue-500", alias="avatar_color")
 
@@ -73,8 +74,10 @@ class UserResponse(BaseModel):
     phone: str = ""
     employeeId: str | None = Field(default=None, alias="employee_id")
     role: str = "Employee"
+    permissions: list[str] = Field(default_factory=list)
     status: Literal["Active", "Inactive"] = "Active"
     avatarColor: str = Field(default="bg-blue-500", alias="avatar_color")
+
 
 
 class RoleResponse(BaseModel):

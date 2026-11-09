@@ -59,7 +59,8 @@ def apply_leave(
     uow: Annotated[UnitOfWork, Depends(get_unit_of_work)],
 ) -> LeaveRequestResponse:
     service = LeaveService(uow)
-    return service.apply_leave(request)
+    return service.apply_leave(request, current_user=current_user)
+
 
 
 @router.put(

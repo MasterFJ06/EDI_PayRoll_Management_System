@@ -17,8 +17,8 @@ import { StatusBadge } from "@/components/common/StatusBadge";
 import { DataTable, type Column } from "@/components/tables/DataTable";
 import { ErrorState } from "@/components/common/ErrorState";
 import { listDesignations, createDesignation, updateDesignation, deleteDesignation } from "@/services/designationService";
-import { departments, departmentName } from "@/data/mockData";
-import type { Designation } from "@/types";
+import { listDepartments } from "@/services/departmentService";
+import type { Designation, Department } from "@/types";
 
 const schema = z.object({
   code: z.string().min(2, "Code is required"),
@@ -32,6 +32,7 @@ type FormValues = z.infer<typeof schema>;
 
 export default function Designations() {
   const [items, setItems] = useState<Designation[]>([]);
+  const [departmentsList, setDepartmentsList] = useState<Department[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [search, setSearch] = useState("");
@@ -47,13 +48,32 @@ export default function Designations() {
 
   async function load() {
     setLoading(true); setError(false);
-    try { setItems(await listDesignations()); } catch { setError(true); } finally { setLoading(false); }
+    try {
+      const [depts, desigs] = await Promise.all([listDepartments(), listDesignations()]);
+      setDepartmentsList(depts);
+      setItems(desigs);
+    } catch {
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
   }
   useEffect(() => { load(); }, []);
 
+  function getDepartmentName(id: string): string {
+    return departmentsList.find((d) => d.id === id)?.name ?? id;
+  }
+
   function openCreate() {
     setEditing(null);
-    reset({ code: "", name: "", description: "", hierarchyLevel: 3, departmentId: departments[0].id, status: "Active" });
+    reset({
+      code: "",
+      name: "",
+      description: "",
+      hierarchyLevel: 3,
+      departmentId: departmentsList[0]?.id ?? "",
+      status: "Active",
+    });
     setFormOpen(true);
   }
   function openEdit(d: Designation) {
@@ -85,7 +105,7 @@ export default function Designations() {
     { key: "name", header: "Designation", sortValue: (d) => d.name, render: (d) => (
       <div><p className="font-medium text-text">{d.name}</p><p className="text-xs text-text-muted">{d.code}</p></div>
     ) },
-    { key: "department", header: "Department", sortValue: (d) => departmentName(d.departmentId), render: (d) => departmentName(d.departmentId) },
+    { key: "department", header: "Department", sortValue: (d) => getDepartmentName(d.departmentId), render: (d) => getDepartmentName(d.departmentId) },
     { key: "level", header: "Hierarchy Level", sortValue: (d) => d.hierarchyLevel, render: (d) => <span className="text-text-muted">L{d.hierarchyLevel}</span> },
     { key: "description", header: "Description", render: (d) => <span className="text-text-muted line-clamp-1 max-w-xs block">{d.description}</span> },
     { key: "status", header: "Status", render: (d) => <StatusBadge status={d.status} /> },
@@ -110,7 +130,7 @@ export default function Designations() {
         <SearchBar value={search} onChange={setSearch} placeholder="Search designations" className="w-full sm:w-72" />
         <Select value={deptFilter} onChange={(e) => setDeptFilter(e.target.value)} className="w-full sm:w-52">
           <option value="all">All Departments</option>
-          {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          {departmentsList.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
         </Select>
       </FilterBar>
 
@@ -149,7 +169,7 @@ export default function Designations() {
             <div>
               <Label required>Department</Label>
               <Select {...register("departmentId")}>
-                {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                {departmentsList.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
               </Select>
             </div>
             <div>

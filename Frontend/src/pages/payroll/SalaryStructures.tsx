@@ -15,9 +15,9 @@ import { StatusBadge } from "@/components/common/StatusBadge";
 import { DataTable, type Column } from "@/components/tables/DataTable";
 import { ErrorState } from "@/components/common/ErrorState";
 import { listSalaryStructures, createSalaryStructure, computeGross, computeDeductions } from "@/services/salaryService";
-import { employees, employeeName } from "@/data/mockData";
+import { listEmployees } from "@/services/employeeService";
 import { formatDate, formatINR } from "@/utils/format";
-import type { SalaryStructure } from "@/types";
+import type { SalaryStructure, Employee } from "@/types";
 
 const schema = z.object({
   employeeId: z.string().min(1, "Employee is required"),
@@ -42,9 +42,11 @@ type FormValues = z.infer<typeof schema>;
 
 export default function SalaryStructures() {
   const [items, setItems] = useState<SalaryStructure[]>([]);
+  const [employeesList, setEmployeesList] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [search, setSearch] = useState("");
+  const [employeeFilter, setEmployeeFilter] = useState("all");
   const [formOpen, setFormOpen] = useState(false);
   const [viewing, setViewing] = useState<SalaryStructure | null>(null);
 
@@ -55,11 +57,57 @@ export default function SalaryStructures() {
 
   async function load() {
     setLoading(true); setError(false);
-    try { setItems(await listSalaryStructures()); } catch { setError(true); } finally { setLoading(false); }
+    try {
+      const [structuresData, empData] = await Promise.all([
+        listSalaryStructures(),
+        listEmployees().catch(() => [] as Employee[]),
+      ]);
+      setItems(structuresData);
+      setEmployeesList(empData);
+    } catch {
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
   }
   useEffect(() => { load(); }, []);
 
-  const filtered = items.filter((s) => employeeName(s.employeeId).toLowerCase().includes(search.toLowerCase()));
+  function getEmployeeName(id: string): string {
+    const emp = employeesList.find((e) => e.id === id || e.employeeCode === id);
+    if (emp) return `${emp.firstName} ${emp.lastName}`;
+    return id || "Unknown";
+  }
+
+  const filtered = items.filter((s) => {
+    const empName = getEmployeeName(s.employeeId);
+    const matchSearch = empName.toLowerCase().includes(search.toLowerCase()) ||
+      s.employeeId.toLowerCase().includes(search.toLowerCase());
+    const matchEmployee = employeeFilter === "all" || s.employeeId === employeeFilter;
+    return matchSearch && matchEmployee;
+  });
+
+  function openCreate() {
+    reset({
+      employeeId: employeesList[0]?.id ?? "",
+      basic: 0,
+      hra: 0,
+      da: 0,
+      specialAllowance: 0,
+      travelAllowance: 0,
+      medicalAllowance: 0,
+      otherAllowances: 0,
+      providentFund: 0,
+      professionalTax: 0,
+      incomeTax: 0,
+      insurance: 0,
+      esi: 0,
+      bonus: 0,
+      loanDeduction: 0,
+      otherDeductions: 0,
+      effectiveFrom: new Date().toISOString().slice(0, 10),
+    });
+    setFormOpen(true);
+  }
 
   async function onSubmit(values: FormValues) {
     await createSalaryStructure({
@@ -72,7 +120,12 @@ export default function SalaryStructures() {
   }
 
   const columns: Column<SalaryStructure>[] = [
-    { key: "employee", header: "Employee", sortValue: (s) => employeeName(s.employeeId), render: (s) => <span className="font-medium text-text">{employeeName(s.employeeId)}</span> },
+    {
+      key: "employee",
+      header: "Employee",
+      sortValue: (s) => getEmployeeName(s.employeeId),
+      render: (s) => <span className="font-medium text-text">{getEmployeeName(s.employeeId)}</span>,
+    },
     { key: "basic", header: "Basic Salary", sortValue: (s) => s.basic, render: (s) => formatINR(s.basic) },
     { key: "gross", header: "Gross Salary", sortValue: (s) => computeGross(s), render: (s) => <span className="font-medium text-text">{formatINR(computeGross(s))}</span> },
     { key: "deductions", header: "Total Deductions", sortValue: (s) => computeDeductions(s), render: (s) => <span className="text-danger">-{formatINR(computeDeductions(s))}</span> },
@@ -88,11 +141,19 @@ export default function SalaryStructures() {
         title="Salary Structure Management"
         description="Configure earnings and deduction components per employee. Statutory rates are sourced from the FastAPI /tax-rules endpoint."
         icon={<Wallet className="h-5 w-5" />}
-        actions={<Button onClick={() => setFormOpen(true)}><Plus className="h-4 w-4" /> New Structure</Button>}
+        actions={<Button onClick={openCreate}><Plus className="h-4 w-4" /> New Structure</Button>}
       />
 
       <FilterBar>
-        <SearchBar value={search} onChange={setSearch} placeholder="Search by employee" className="w-full sm:w-72" />
+        <SearchBar value={search} onChange={setSearch} placeholder="Search by employee" className="w-full sm:w-64" />
+        <Select value={employeeFilter} onChange={(e) => setEmployeeFilter(e.target.value)} className="w-full sm:w-48">
+          <option value="all">All Employees</option>
+          {employeesList.map((e) => (
+            <option key={e.id} value={e.id}>
+              {e.firstName} {e.lastName} ({e.employeeCode})
+            </option>
+          ))}
+        </Select>
       </FilterBar>
 
       <div className="mt-4">
@@ -113,22 +174,26 @@ export default function SalaryStructures() {
           <div className="sm:col-span-2">
             <Label required>Employee</Label>
             <Select {...register("employeeId")} error={!!errors.employeeId}>
-              <option value="">Select employee</option>
-              {employees.map((e) => <option key={e.id} value={e.id}>{e.firstName} {e.lastName} ({e.employeeCode})</option>)}
+              <option value="">{employeesList.length === 0 ? "No employees available" : "Select employee"}</option>
+              {employeesList.map((e) => (
+                <option key={e.id} value={e.id}>
+                  {e.firstName} {e.lastName} ({e.employeeCode})
+                </option>
+              ))}
             </Select>
             {errors.employeeId && <p className="mt-1 text-xs text-danger">{errors.employeeId.message}</p>}
           </div>
-          <div><Label required>Basic Salary (\u20b9)</Label><Input type="number" {...register("basic")} error={!!errors.basic} />{errors.basic && <p className="mt-1 text-xs text-danger">{errors.basic.message}</p>}</div>
-          <div><Label required>HRA (\u20b9)</Label><Input type="number" {...register("hra")} /></div>
-          <div><Label required>DA (\u20b9)</Label><Input type="number" {...register("da")} /></div>
-          <div><Label>Special Allowance (\u20b9)</Label><Input type="number" {...register("specialAllowance")} /></div>
-          <div><Label>Travel Allowance (\u20b9)</Label><Input type="number" {...register("travelAllowance")} /></div>
-          <div><Label>Medical Allowance (\u20b9)</Label><Input type="number" {...register("medicalAllowance")} /></div>
-          <div><Label>Other Allowances (\u20b9)</Label><Input type="number" {...register("otherAllowances")} /></div>
-          <div><Label required>Provident Fund (\u20b9)</Label><Input type="number" {...register("providentFund")} /></div>
-          <div><Label required>Professional Tax (\u20b9)</Label><Input type="number" {...register("professionalTax")} /></div>
-          <div><Label required>Income Tax (\u20b9)</Label><Input type="number" {...register("incomeTax")} /></div>
-          <div><Label>Insurance (\u20b9)</Label><Input type="number" {...register("insurance")} /></div>
+          <div><Label required>Basic Salary (₹)</Label><Input type="number" {...register("basic")} error={!!errors.basic} />{errors.basic && <p className="mt-1 text-xs text-danger">{errors.basic.message}</p>}</div>
+          <div><Label required>HRA (₹)</Label><Input type="number" {...register("hra")} /></div>
+          <div><Label required>DA (₹)</Label><Input type="number" {...register("da")} /></div>
+          <div><Label>Special Allowance (₹)</Label><Input type="number" {...register("specialAllowance")} /></div>
+          <div><Label>Travel Allowance (₹)</Label><Input type="number" {...register("travelAllowance")} /></div>
+          <div><Label>Medical Allowance (₹)</Label><Input type="number" {...register("medicalAllowance")} /></div>
+          <div><Label>Other Allowances (₹)</Label><Input type="number" {...register("otherAllowances")} /></div>
+          <div><Label required>Provident Fund (₹)</Label><Input type="number" {...register("providentFund")} /></div>
+          <div><Label required>Professional Tax (₹)</Label><Input type="number" {...register("professionalTax")} /></div>
+          <div><Label required>Income Tax (₹)</Label><Input type="number" {...register("incomeTax")} /></div>
+          <div><Label>Insurance (₹)</Label><Input type="number" {...register("insurance")} /></div>
           <div><Label required>Effective From</Label><Input type="date" {...register("effectiveFrom")} error={!!errors.effectiveFrom} /></div>
         </form>
       </Dialog>
@@ -136,7 +201,7 @@ export default function SalaryStructures() {
       <Dialog open={!!viewing} onClose={() => setViewing(null)} title="Salary Breakdown" size="sm">
         {viewing && (
           <div className="space-y-1 text-sm">
-            <p className="mb-2 font-medium text-text">{employeeName(viewing.employeeId)}</p>
+            <p className="mb-2 font-medium text-text">{getEmployeeName(viewing.employeeId)}</p>
             {[
               ["Basic", viewing.basic], ["HRA", viewing.hra], ["DA", viewing.da], ["Special Allowance", viewing.specialAllowance],
               ["Travel Allowance", viewing.travelAllowance], ["Medical Allowance", viewing.medicalAllowance], ["Other Allowances", viewing.otherAllowances],

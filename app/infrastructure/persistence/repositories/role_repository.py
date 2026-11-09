@@ -76,3 +76,44 @@ class RoleRepository:
     def get_all_permissions(self) -> list[Permission]:
         statement = select(Permission).order_by(Permission.permission_code.asc())
         return list(self.session.scalars(statement).all())
+
+    def get_permission_by_code(self, permission_code: str) -> Permission | None:
+        statement = select(Permission).where(Permission.permission_code == permission_code)
+        return self.session.scalar(statement)
+
+    def add_permission(self, permission: Permission) -> Permission:
+        self.session.add(permission)
+        self.session.flush()
+        return permission
+
+    def get_role_permission(self, role_id: int, permission_id: int) -> RolePermission | None:
+        statement = select(RolePermission).where(
+            RolePermission.role_id == role_id,
+            RolePermission.permission_id == permission_id,
+        )
+        return self.session.scalar(statement)
+
+    def add_role_permission(self, role_id: int, permission_id: int) -> RolePermission:
+        rp = RolePermission(role_id=role_id, permission_id=permission_id)
+        self.session.merge(rp)
+        self.session.flush()
+        return rp
+
+    def remove_user_role(self, user_id: int, role_id: int) -> None:
+        statement = delete(UserRole).where(
+            UserRole.user_id == user_id,
+            UserRole.role_id == role_id,
+        )
+        self.session.execute(statement)
+        self.session.flush()
+
+    def get_user_permissions(self, user_id: int) -> list[Permission]:
+        statement = (
+            select(Permission)
+            .join(RolePermission, RolePermission.permission_id == Permission.permission_id)
+            .join(UserRole, UserRole.role_id == RolePermission.role_id)
+            .where(UserRole.user_id == user_id)
+            .distinct()
+        )
+        return list(self.session.scalars(statement).all())
+

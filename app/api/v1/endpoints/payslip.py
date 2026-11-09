@@ -68,10 +68,15 @@ def download_payslip_pdf(
 ) -> Response:
     service = PayslipService(uow)
     pdf_bytes = service.generate_pdf_bytes(slip_id)
+    if pdf_bytes is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Payslip '{slip_id}' not found.",
+        )
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={
-            "Content-Disposition": f"attachment; filename={slip_id}.pdf"
+            "Content-Disposition": f'attachment; filename="{slip_id}.pdf"'
         },
     )

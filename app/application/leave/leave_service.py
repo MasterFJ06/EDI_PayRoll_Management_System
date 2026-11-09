@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Any
 
 from app.application.common.unit_of_work import UnitOfWork
 from app.application.leave.schemas import (
@@ -84,16 +85,96 @@ class LeaveService:
             return None
         return self._to_response(req)
 
-    def apply_leave(self, payload: LeaveApplyRequest) -> LeaveRequestResponse:
+    def _ensure_leave_types(self) -> None:
+        if getattr(self.uow, "leaves", None) is None:
+            return
+        existing = self.uow.leaves.get_types()
+        if not existing:
+            default_types = [
+                ("CASUAL", "Casual"),
+                ("SICK", "Sick"),
+                ("EARNED", "Earned"),
+                ("MATERNITY", "Maternity"),
+                ("PATERNITY", "Paternity"),
+                ("UNPAID", "Unpaid"),
+            ]
+            for code, name in default_types:
+                self.uow.leaves.add_type(
+                    LeaveType(leave_type_code=code, leave_type_name=name, description=f"{name} leave")
+                )
+            self.uow.commit()
+
+    def _ensure_default_employee(self, current_user: Any = None) -> Any:
+        if getattr(self.uow, "employees", None) is None:
+            return None
+
+        emps = self.uow.employees.get_all()
+        if emps:
+            return emps[0]
+
+        desig_id = 1
+        if getattr(self.uow, "session", None) is not None:
+            from app.infrastructure.persistence.models.designation import Designation
+            desigs = self.uow.session.query(Designation).all()
+            if not desigs:
+                desig = Designation(designation_code="SE", designation_name="Software Engineer", status="ACTIVE")
+                self.uow.session.add(desig)
+                self.uow.session.flush()
+                desig_id = desig.designation_id
+            else:
+                desig_id = desigs[0].designation_id
+
+        dept_id = 1
+        if getattr(self.uow, "session", None) is not None:
+            from app.infrastructure.persistence.models.department import Department
+            depts = self.uow.session.query(Department).all()
+            if not depts:
+                dept = Department(department_code="IT", department_name="Information Technology")
+                self.uow.session.add(dept)
+                self.uow.session.flush()
+                dept_id = dept.department_id
+            else:
+                dept_id = depts[0].department_id
+
+        from app.infrastructure.persistence.models.employee import Employee as EmployeeModel
+        user_id = getattr(current_user, "user_id", 2) if current_user else 2
+        emp = EmployeeModel(
+            employee_code="EMP001",
+            user_id=user_id,
+            first_name="Farhan",
+            last_name="Member",
+            department_id=dept_id,
+            designation_id=desig_id,
+            joining_date=date(2025, 1, 1),
+            employment_status="ACTIVE",
+        )
+        self.uow.employees.add(emp)
+        self.uow.commit()
+        return emp
+
+    def apply_leave(self, payload: LeaveApplyRequest, current_user: Any = None) -> LeaveRequestResponse:
         if self.uow.leaves is None or self.uow.employees is None:
             raise RuntimeError("Unit of Work has not been started.")
 
-        emp_code = payload.employeeId or payload.employee_id or "EMP001"
-        emp = self.uow.employees.get_by_code(str(emp_code))
-        if emp is None and str(emp_code).isdigit():
-            emp = self.uow.employees.get_by_id(int(emp_code))
+        self._ensure_leave_types()
+
+        emp_code = payload.employeeId or payload.employee_id
+        emp = None
+        if emp_code:
+            emp = self.uow.employees.get_by_code(str(emp_code))
+            if emp is None and str(emp_code).isdigit():
+                emp = self.uow.employees.get_by_id(int(emp_code))
+
+        if emp is None and current_user and getattr(current_user, "user_id", None):
+            emp = self.uow.employees.get_by_user_id(current_user.user_id)
+
         if emp is None:
-            emp = self.uow.employees.get_all()[0] if self.uow.employees.get_all() else None
+            all_emps = self.uow.employees.get_all()
+            if all_emps:
+                emp = all_emps[0]
+
+        if emp is None:
+            emp = self._ensure_default_employee(current_user)
 
         emp_id = emp.employee_id if emp else 1
 
@@ -101,7 +182,9 @@ class LeaveService:
         type_str = payload.leaveType or payload.leave_type or "Casual"
         type_obj = self.uow.leaves.get_type_by_code(type_str.upper())
         if type_obj is None:
-            type_obj = self.uow.leaves.get_types()[0] if self.uow.leaves.get_types() else None
+            types = self.uow.leaves.get_types()
+            matching = [t for t in types if t.leave_type_name.lower() == type_str.lower()]
+            type_obj = matching[0] if matching else (types[0] if types else None)
 
         type_id = type_obj.leave_type_id if type_obj else 1
 

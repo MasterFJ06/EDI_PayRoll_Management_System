@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -8,9 +8,10 @@ import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
 import { Select } from "@/components/ui/Select";
 import { Textarea } from "@/components/ui/Textarea";
-import { createEmployee, updateEmployee } from "@/services/employeeService";
-import { departments, designations, employees } from "@/data/mockData";
-import type { Employee } from "@/types";
+import { createEmployee, updateEmployee, listEmployees } from "@/services/employeeService";
+import { listDepartments } from "@/services/departmentService";
+import { listDesignations } from "@/services/designationService";
+import type { Department, Designation, Employee } from "@/types";
 
 const schema = z.object({
   firstName: z.string().min(1, "First name is required"),
@@ -30,14 +31,58 @@ const schema = z.object({
 });
 type FormValues = z.infer<typeof schema>;
 
-export function EmployeeFormDialog({ open, onClose, employee, onSaved }: { open: boolean; onClose: () => void; employee: Employee | null; onSaved: () => void }) {
+export interface EmployeeFormDialogProps {
+  open: boolean;
+  onClose: () => void;
+  employee: Employee | null;
+  onSaved: () => void;
+  departments?: Department[];
+  designations?: Designation[];
+  employees?: Employee[];
+}
+
+export function EmployeeFormDialog({
+  open,
+  onClose,
+  employee,
+  onSaved,
+  departments: departmentsProp,
+  designations: designationsProp,
+  employees: employeesProp,
+}: EmployeeFormDialogProps) {
+  const [departmentsList, setDepartmentsList] = useState<Department[]>(departmentsProp ?? []);
+  const [designationsList, setDesignationsList] = useState<Designation[]>(designationsProp ?? []);
+  const [employeesList, setEmployeesList] = useState<Employee[]>(employeesProp ?? []);
+
   const { register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: { gender: "Male", employmentType: "Full-Time", employmentStatus: "Active" },
   });
 
   useEffect(() => {
+    if (departmentsProp) setDepartmentsList(departmentsProp);
+    if (designationsProp) setDesignationsList(designationsProp);
+    if (employeesProp) setEmployeesList(employeesProp);
+
+    if (open && (!departmentsProp || !designationsProp || !employeesProp)) {
+      Promise.all([
+        departmentsProp ? Promise.resolve(departmentsProp) : listDepartments(),
+        designationsProp ? Promise.resolve(designationsProp) : listDesignations(),
+        employeesProp ? Promise.resolve(employeesProp) : listEmployees(),
+      ]).then(([depts, desigs, emps]) => {
+        setDepartmentsList(depts);
+        setDesignationsList(desigs);
+        setEmployeesList(emps);
+      }).catch(() => {
+        // Fallback or ignore
+      });
+    }
+  }, [open, departmentsProp, designationsProp, employeesProp]);
+
+  useEffect(() => {
     if (open) {
+      const defaultDeptId = employee?.departmentId ?? departmentsList[0]?.id ?? "";
+      const defaultDesigId = employee?.designationId ?? designationsList[0]?.id ?? "";
       reset(employee ? {
         firstName: employee.firstName, lastName: employee.lastName, email: employee.email, phone: employee.phone,
         dateOfBirth: employee.dateOfBirth, gender: employee.gender, departmentId: employee.departmentId,
@@ -46,19 +91,24 @@ export function EmployeeFormDialog({ open, onClose, employee, onSaved }: { open:
         emergencyContact: employee.emergencyContact,
       } : {
         firstName: "", lastName: "", email: "", phone: "", dateOfBirth: "", gender: "Male",
-        departmentId: departments[0].id, designationId: designations[0].id, managerId: "",
+        departmentId: defaultDeptId, designationId: defaultDesigId, managerId: "",
         employmentType: "Full-Time", joiningDate: new Date().toISOString().slice(0, 10),
         employmentStatus: "Active", address: "", emergencyContact: "",
       });
     }
-  }, [open, employee, reset]);
+  }, [open, employee, reset, departmentsList, designationsList]);
 
   async function onSubmit(values: FormValues) {
     const today = new Date().toISOString().slice(0, 10);
     if (employee) {
       await updateEmployee(employee.id, { ...values, managerId: values.managerId || null, updatedDate: today });
     } else {
-      const code = `EMP${String(employees.length + Math.floor(Math.random() * 900) + 100).padStart(3, "0")}`;
+      let nextNum = employeesList.length + 1;
+      employeesList.forEach((e) => {
+        const num = parseInt(e.employeeCode?.replace(/\D/g, "") || "0", 10);
+        if (num >= nextNum) nextNum = num + 1;
+      });
+      const code = `EMP${String(nextNum).padStart(3, "0")}`;
       await createEmployee({
         id: code, employeeCode: code, ...values, managerId: values.managerId || null,
         createdDate: today, updatedDate: today,
@@ -86,17 +136,33 @@ export function EmployeeFormDialog({ open, onClose, employee, onSaved }: { open:
         <div><Label required>Gender</Label><Select {...register("gender")}><option>Male</option><option>Female</option><option>Other</option></Select></div>
         <div>
           <Label required>Department</Label>
-          <Select {...register("departmentId")}>{departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</Select>
+          <Select {...register("departmentId")} error={!!errors.departmentId}>
+            {departmentsList.length === 0 ? (
+              <option value="">No departments available</option>
+            ) : (
+              departmentsList.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)
+            )}
+          </Select>
+          {errors.departmentId && <p className="mt-1 text-xs text-danger">{errors.departmentId.message}</p>}
         </div>
         <div>
           <Label required>Designation</Label>
-          <Select {...register("designationId")}>{designations.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</Select>
+          <Select {...register("designationId")} error={!!errors.designationId}>
+            {designationsList.length === 0 ? (
+              <option value="">No designations available</option>
+            ) : (
+              designationsList.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)
+            )}
+          </Select>
+          {errors.designationId && <p className="mt-1 text-xs text-danger">{errors.designationId.message}</p>}
         </div>
         <div>
           <Label>Manager</Label>
           <Select {...register("managerId")}>
             <option value="">No Manager</option>
-            {employees.map((e) => <option key={e.id} value={e.id}>{e.firstName} {e.lastName}</option>)}
+            {employeesList
+              .filter((e) => !employee || e.id !== employee.id)
+              .map((e) => <option key={e.id} value={e.id}>{e.firstName} {e.lastName} ({e.employeeCode})</option>)}
           </Select>
         </div>
         <div><Label required>Employment Type</Label><Select {...register("employmentType")}><option>Full-Time</option><option>Part-Time</option><option>Contract</option><option>Intern</option></Select></div>

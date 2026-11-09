@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -30,6 +30,8 @@ const schema = z.object({
 type FormValues = z.infer<typeof schema>;
 
 export function UserFormDialog({ open, onClose, user, onSaved }: { open: boolean; onClose: () => void; user: AppUser | null; onSaved: () => void }) {
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
   const { register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: { status: "Active", role: "Employee" },
@@ -37,6 +39,7 @@ export function UserFormDialog({ open, onClose, user, onSaved }: { open: boolean
 
   useEffect(() => {
     if (open) {
+      setSubmitError(null);
       reset(user ? {
         firstName: user.firstName, lastName: user.lastName, username: user.username, email: user.email,
         phone: user.phone, employeeId: user.employeeId ?? "", role: user.role, status: user.status,
@@ -46,15 +49,41 @@ export function UserFormDialog({ open, onClose, user, onSaved }: { open: boolean
   }, [open, user, reset]);
 
   async function onSubmit(values: FormValues) {
-    if (user) {
-      await updateUser(user.id, { ...values, role: values.role as Role, employeeId: values.employeeId || null });
-    } else {
-      await createUser({
-        id: `U${Date.now()}`, avatarColor: "bg-blue-500",
-        ...values, role: values.role as Role, employeeId: values.employeeId || null,
-      });
+    setSubmitError(null);
+    if (!user && (!values.password || values.password.length < 8)) {
+      setSubmitError("Password is required for new accounts (minimum 8 characters).");
+      return;
     }
-    onSaved();
+
+    try {
+      if (user) {
+        await updateUser(user.id, {
+          email: values.email,
+          role: values.role as Role,
+          firstName: values.firstName,
+          lastName: values.lastName,
+          phone: values.phone,
+          status: values.status,
+          password: values.password || undefined,
+        });
+      } else {
+        await createUser({
+          id: `U${Date.now()}`,
+          avatarColor: "bg-blue-500",
+          ...values,
+          role: values.role as Role,
+          employeeId: values.employeeId || null,
+        });
+      }
+      onSaved();
+    } catch (err: any) {
+      const msg =
+        err?.response?.data?.detail ||
+        err?.response?.data?.message ||
+        err?.message ||
+        "Failed to save user account. Please check your permissions and account details.";
+      setSubmitError(typeof msg === "string" ? msg : JSON.stringify(msg));
+    }
   }
 
   return (
@@ -65,12 +94,20 @@ export function UserFormDialog({ open, onClose, user, onSaved }: { open: boolean
       size="lg"
       footer={
         <>
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={handleSubmit(onSubmit)} loading={isSubmitting}>{user ? "Save Changes" : "Create User"}</Button>
+          <Button variant="outline" onClick={onClose} disabled={isSubmitting}>Cancel</Button>
+          <Button onClick={handleSubmit(onSubmit)} loading={isSubmitting} disabled={isSubmitting}>
+            {user ? "Save Changes" : "Create User"}
+          </Button>
         </>
       }
     >
       <form className="grid grid-cols-1 gap-4 sm:grid-cols-2" onSubmit={handleSubmit(onSubmit)}>
+        {submitError && (
+          <div className="col-span-1 sm:col-span-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">
+            {submitError}
+          </div>
+        )}
+
         <div>
           <Label required>First Name</Label>
           <Input {...register("firstName")} error={!!errors.firstName} />

@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from typing import Any, Literal
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ProcessPayrollRequest(BaseModel):
@@ -23,33 +23,89 @@ class PayrollRecordResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True, from_attributes=True)
 
     id: str
-    payrollMonth: str = Field(alias="payroll_month")
-    employeeId: str = Field(alias="employee_id")
-    basicSalary: float = Field(alias="basic_salary")
+    payrollMonth: str = ""
+    employeeId: str = ""
+    basicSalary: float = 0.0
     allowances: float = 0.0
     overtime: float = 0.0
-    leaveDeductions: float = Field(default=0.0, alias="leave_deductions")
+    leaveDeductions: float = 0.0
     tax: float = 0.0
-    otherDeductions: float = Field(default=0.0, alias="other_deductions")
-    grossSalary: float = Field(alias="gross_salary")
-    totalDeductions: float = Field(alias="total_deductions")
-    netSalary: float = Field(alias="net_salary")
+    otherDeductions: float = 0.0
+    grossSalary: float = 0.0
+    totalDeductions: float = 0.0
+    netSalary: float = 0.0
     status: Literal["Draft", "Validated", "Processed", "Approved", "Paid"] = "Draft"
-    generatedDate: str = Field(alias="generated_date")
-    generatedBy: str = Field(alias="generated_by")
+    generatedDate: str = ""
+    generatedBy: str = ""
+
+    # snake_case compatibility
+    payroll_month: str = ""
+    employee_id: str = ""
+    basic_salary: float = 0.0
+    leave_deductions: float = 0.0
+    other_deductions: float = 0.0
+    gross_salary: float = 0.0
+    total_deductions: float = 0.0
+    net_salary: float = 0.0
+    generated_date: str = ""
+    generated_by: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def sync_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            mapping = {
+                "payrollMonth": "payroll_month",
+                "employeeId": "employee_id",
+                "basicSalary": "basic_salary",
+                "leaveDeductions": "leave_deductions",
+                "otherDeductions": "other_deductions",
+                "grossSalary": "gross_salary",
+                "totalDeductions": "total_deductions",
+                "netSalary": "net_salary",
+                "generatedDate": "generated_date",
+                "generatedBy": "generated_by",
+            }
+            for camel, snake in mapping.items():
+                if camel in data and not data.get(snake):
+                    data[snake] = data[camel]
+                elif snake in data and not data.get(camel):
+                    data[camel] = data[snake]
+        return data
 
 
 class PayrollValidationIssueResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True, from_attributes=True)
 
     id: str
-    employeeId: str = Field(alias="employee_id")
-    validationType: str = Field(alias="validation_type")
+    employeeId: str = ""
+    validationType: str = ""
     status: Literal["Open", "Resolved"] = "Open"
-    message: str
+    message: str = ""
     severity: Literal["Information", "Warning", "Error", "Critical"] = "Warning"
-    timestamp: str
-    validatedBy: str = Field(alias="validated_by")
+    timestamp: str = ""
+    validatedBy: str = ""
+
+    # snake_case compatibility
+    employee_id: str = ""
+    validation_type: str = ""
+    validated_by: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def sync_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            mapping = {
+                "employeeId": "employee_id",
+                "validationType": "validation_type",
+                "validatedBy": "validated_by",
+            }
+            for camel, snake in mapping.items():
+                if camel in data and not data.get(snake):
+                    data[snake] = data[camel]
+                elif snake in data and not data.get(camel):
+                    data[camel] = data[snake]
+        return data
 
 
 class ResolveValidationIssueRequest(BaseModel):
@@ -60,17 +116,48 @@ class PayslipResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True, from_attributes=True)
 
     id: str
-    payrollId: str = Field(alias="payroll_id")
-    employeeId: str = Field(alias="employee_id")
-    payrollMonth: str = Field(alias="payroll_month")
-    basicSalary: float = Field(alias="basic_salary")
+    payrollId: str = ""
+    employeeId: str = ""
+    payrollMonth: str = ""
+    basicSalary: float = 0.0
     allowances: float = 0.0
     deductions: float = 0.0
-    grossSalary: float = Field(alias="gross_salary")
-    netSalary: float = Field(alias="net_salary")
-    generatedDate: str = Field(alias="generated_date")
-    digitalSignature: str = Field(default="Payroll Administrator", alias="digital_signature")
+    grossSalary: float = 0.0
+    netSalary: float = 0.0
+    generatedDate: str = ""
+    digitalSignature: str = "Payroll Administrator"
     status: Literal["Generated", "Sent", "Downloaded"] = "Generated"
+
+    # snake_case compatibility
+    payroll_id: str = ""
+    employee_id: str = ""
+    payroll_month: str = ""
+    basic_salary: float = 0.0
+    gross_salary: float = 0.0
+    net_salary: float = 0.0
+    generated_date: str = ""
+    digital_signature: str = "Payroll Administrator"
+
+    @model_validator(mode="before")
+    @classmethod
+    def sync_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            mapping = {
+                "payrollId": "payroll_id",
+                "employeeId": "employee_id",
+                "payrollMonth": "payroll_month",
+                "basicSalary": "basic_salary",
+                "grossSalary": "gross_salary",
+                "netSalary": "net_salary",
+                "generatedDate": "generated_date",
+                "digitalSignature": "digital_signature",
+            }
+            for camel, snake in mapping.items():
+                if camel in data and not data.get(snake):
+                    data[snake] = data[camel]
+                elif snake in data and not data.get(camel):
+                    data[camel] = data[snake]
+        return data
 
 
 class CreatePayslipRequest(BaseModel):
@@ -90,14 +177,39 @@ class DeductionResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True, from_attributes=True)
 
     id: str
-    employeeId: str = Field(alias="employee_id")
-    payrollId: str = Field(alias="payroll_id")
-    type: Literal["PF", "ESI", "Professional Tax", "Income Tax", "Insurance", "Loan", "Other"]
-    calculationMethod: Literal["Percentage", "Flat", "Slab"] = Field(alias="calculation_method")
-    amount: float
-    ruleApplied: str = Field(alias="rule_applied")
-    effectiveDate: str = Field(alias="effective_date")
+    employeeId: str = ""
+    payrollId: str = ""
+    type: Literal["PF", "ESI", "Professional Tax", "Income Tax", "Insurance", "Loan", "Other"] = "PF"
+    calculationMethod: Literal["Percentage", "Flat", "Slab"] = "Percentage"
+    amount: float = 0.0
+    ruleApplied: str = ""
+    effectiveDate: str = ""
     status: Literal["Active", "Inactive"] = "Active"
+
+    # snake_case compatibility
+    employee_id: str = ""
+    payroll_id: str = ""
+    calculation_method: str = "Percentage"
+    rule_applied: str = ""
+    effective_date: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def sync_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            mapping = {
+                "employeeId": "employee_id",
+                "payrollId": "payroll_id",
+                "calculationMethod": "calculation_method",
+                "ruleApplied": "rule_applied",
+                "effectiveDate": "effective_date",
+            }
+            for camel, snake in mapping.items():
+                if camel in data and not data.get(snake):
+                    data[snake] = data[camel]
+                elif snake in data and not data.get(camel):
+                    data[camel] = data[snake]
+        return data
 
 
 class TaxRuleResponse(BaseModel):
